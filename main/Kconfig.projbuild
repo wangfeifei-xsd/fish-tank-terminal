@@ -1,0 +1,48 @@
+menu "Fish Tank Terminal"
+
+    config FISH_TANK_TERMINAL
+        bool "Enable Fish Tank Terminal application"
+        default y
+
+    config FISH_MOCK_API
+        bool "Use mock API responses (offline development)"
+        default y
+        help
+            Return built-in JSON when HTTP gateway is unavailable.
+
+    config FISH_AUTO_POLL
+        bool "Auto poll tank/temperature every 60 seconds"
+        default y
+
+    config FISH_API_HOST
+        string "Device API host URL"
+        default "https://api.marinefish.fun"
+
+    config FISH_APP_KEY
+        string "Default AppKey (override via NVS)"
+        default "ak_hardware_dev_01"
+
+    config FISH_APP_SECRET
+        string "Default AppSecret (override via NVS)"
+        default "dK9mN2xQ7vL4pR8tW3jF5hB1cZ6yA0uE"
+
+    config FISH_DEV_WIFI_SSID
+        string "Dev WiFi SSID (skip BLE provision when set)"
+        default ""
+        help
+            For lab bring-up when C6/BLE is unavailable. If non-empty, credentials
+            are written to NVS on boot and the device skips BLE provisioning.
+
+    config FISH_DEV_WIFI_PASS
+        string "Dev WiFi password"
+        default ""
+
+    config FISH_LOGICAL_WIDTH
+        int "Logical canvas width (landscape)"
+        default 1280
+
+    config FISH_LOGICAL_HEIGHT
+        int "Logical canvas height (landscape)"
+        default 720
+
+endmenu
