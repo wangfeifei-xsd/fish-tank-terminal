@@ -181,6 +181,12 @@ esp_err_t fish_wifi_scan(wifi_ap_record_t *out, uint16_t *count)
     *count = n;
     free(tmp);
     s_want_connect = prev;
+    if (prev) {
+        esp_err_t rc = esp_wifi_connect();
+        if (rc != ESP_OK) {
+            ESP_LOGW(TAG, "reconnect after scan failed: %s", esp_err_to_name(rc));
+        }
+    }
     ESP_LOGI(TAG, "scan found %u unique SSIDs", n);
     return ESP_OK;
 }

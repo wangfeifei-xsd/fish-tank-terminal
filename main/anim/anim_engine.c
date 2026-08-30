@@ -17,9 +17,7 @@
 
 static const char *TAG = "anim_engine";
 #define FISH_DECO_BIN_MAX 256
-#define FEED_HAND_W 48.0f
-#define FEED_HAND_DUR_MS 1200
-#define FEED_HAND_FADE_MS 350
+#define FEED_SPAWN_DROP 12.0f
 
 static const float DT = 1.0f / 60.0f;
 static const uint32_t ANIM_TIMER_MS = 16; /* 60Hz 同步，仿真步长仍固定 dt=1/60 */
@@ -594,9 +592,6 @@ static void anim_invalidate_feed(anim_engine_t *eng)
 {
     bool dirty[3] = {false, false, false};
     const float pad = 48.0f;
-    if (eng->hand.active) {
-        mark_thirds(dirty, eng->hand.x, eng->hand.y, FEED_HAND_W * 0.9f, eng->view_h);
-    }
     for (int i = 0; i < ANIM_MAX_PARTICLES; i++) {
         anim_particle_t *p = &eng->particles[i];
         if (!p->eaten) {
@@ -1122,12 +1117,6 @@ static void update_feed(anim_engine_t *eng)
     if (!eng->feed_active) {
         return;
     }
-    if (eng->hand.active) {
-        eng->hand.t += DT;
-        if (eng->hand.t >= (float)FEED_HAND_DUR_MS / 1000.0f) {
-            eng->hand.active = false;
-        }
-    }
 
     int remain = 0;
     for (int i = 0; i < ANIM_MAX_PARTICLES; i++) {
@@ -1146,7 +1135,6 @@ static void update_feed(anim_engine_t *eng)
 
     if (remain == 0) {
         eng->feed_active = false;
-        eng->hand.active = false;
         for (int fi = 0; fi < eng->fish_count; fi++) {
             eng->fishes[fi].seek = NULL;
         }
@@ -1199,45 +1187,6 @@ static void draw_particles(anim_engine_t *eng, lv_draw_ctx_t *ctx)
     }
 }
 
-static void draw_feed_hand(anim_engine_t *eng, lv_draw_ctx_t *ctx)
-{
-    if (!eng->hand.active) {
-        return;
-    }
-    int64_t elapsed = now_ms() - eng->hand.start_ms;
-    if (elapsed >= FEED_HAND_DUR_MS) {
-        return;
-    }
-    float bob = sinf(eng->hand.t * 6.0f) * 2.0f;
-    float fade = 1.0f;
-    if (elapsed > FEED_HAND_DUR_MS - FEED_HAND_FADE_MS) {
-        fade = (float)(FEED_HAND_DUR_MS - elapsed) / (float)FEED_HAND_FADE_MS;
-        if (fade < 0.0f) {
-            fade = 0.0f;
-        }
-    }
-    lv_coord_t cx = ax(eng, eng->hand.x);
-    lv_coord_t cy = ay(eng, eng->hand.y + bob);
-    lv_opa_t opa = (lv_opa_t)(220.0f * fade);
-    lv_draw_rect_dsc_t palm;
-    lv_draw_rect_dsc_init(&palm);
-    palm.radius = 10;
-    palm.bg_color = lv_color_hex(0xfdba74);
-    palm.bg_opa = opa;
-    lv_area_t palm_a = {cx - 16, cy - 30, cx + 16, cy + 6};
-    lv_draw_rect(ctx, &palm, &palm_a);
-    lv_draw_rect_dsc_t finger;
-    lv_draw_rect_dsc_init(&finger);
-    finger.radius = 4;
-    finger.bg_color = lv_color_hex(0xfdba74);
-    finger.bg_opa = opa;
-    for (int i = 0; i < 4; i++) {
-        lv_coord_t fx = cx - 12 + i * 8;
-        lv_area_t fa = {fx - 3, cy - 42, fx + 3, cy - 24};
-        lv_draw_rect(ctx, &finger, &fa);
-    }
-}
-
 static void draw_clean_fx(anim_engine_t *eng, lv_draw_ctx_t *ctx)
 {
     if (!eng->clean.active) {
@@ -1277,7 +1226,6 @@ static void anim_canvas_event(lv_event_t *e)
     eng->draw_ox = coords.x1;
     eng->draw_oy = coords.y1;
     if (eng->feed_active) {
-        draw_feed_hand(eng, ctx);
         draw_particles(eng, ctx);
     }
     if (eng->clean.active) {
@@ -1300,7 +1248,7 @@ static void anim_lv_sync_cb(void *user)
 static void anim_esp_timer_cb(void *arg)
 {
     anim_engine_t *eng = arg;
-    if (!eng) {
+    if (!eng || eng->paused) {
         return;
     }
     int64_t now_us = esp_timer_get_time();
@@ -1565,6 +1513,18 @@ void anim_engine_stop(anim_engine_t *eng)
     if (eng) {
         eng->gen++;
         eng->lv_sync_pending = false;
+        eng->paused = false;
+    }
+}
+
+void anim_engine_set_paused(anim_engine_t *eng, bool paused)
+{
+    if (!eng) {
+        return;
+    }
+    eng->paused = paused;
+    if (paused) {
+        eng->lv_sync_pending = false;
     }
 }
 
@@ -1583,12 +1543,7 @@ void anim_engine_trigger_feed(anim_engine_t *eng, int x, int y)
     }
     ESP_LOGI(TAG, "feed trigger (%d,%d)", x, y);
     eng->feed_active = true;
-    eng->hand.active = true;
-    eng->hand.x = (float)x;
-    eng->hand.y = (float)y;
-    eng->hand.t = 0;
-    eng->hand.start_ms = now_ms();
-    float spawn_y = (float)y + FEED_HAND_W * 0.55f;
+    float spawn_y = (float)y + FEED_SPAWN_DROP;
     for (int i = 0; i < ANIM_MAX_PARTICLES; i++) {
         anim_particle_t *p = &eng->particles[i];
         p->eaten = false;
@@ -1630,24 +1585,18 @@ void anim_engine_trigger_water(anim_engine_t *eng)
 
 void anim_engine_screen_tap(anim_engine_t *eng, int screen_x, int screen_y)
 {
-    if (!eng || !eng->root) {
+    if (!eng || !eng->root || eng->paused) {
         return;
     }
-    lv_area_t a;
-    if (lvgl_port_lock(0)) {
-        lv_obj_get_coords(eng->root, &a);
-        lvgl_port_unlock();
-    } else {
-        a.x1 = (lv_coord_t)((CONFIG_FISH_LOGICAL_WIDTH - ANIM_W) / 2);
-        a.y1 = ANIM_CANVAS_TOP_Y;
-        a.x2 = a.x1 + (lv_coord_t)ANIM_W - 1;
-        a.y2 = a.y1 + eng->view_h - 1;
-    }
-    if (screen_x < a.x1 || screen_x > a.x2 || screen_y < a.y1 || screen_y > a.y2) {
+    /* Fixed layout; do not call lvgl_port_lock here (may run inside taskLVGL indev read). */
+    lv_coord_t ox = (lv_coord_t)((CONFIG_FISH_LOGICAL_WIDTH - ANIM_W) / 2);
+    lv_coord_t oy = ANIM_CANVAS_TOP_Y;
+    lv_coord_t view_h = eng->view_h;
+    if (screen_x < ox || screen_x >= ox + (lv_coord_t)ANIM_W || screen_y < oy || screen_y >= oy + view_h) {
         return;
     }
-    int lx = (int)(screen_x - a.x1);
-    int ly = (int)(screen_y - a.y1);
+    int lx = (int)(screen_x - ox);
+    int ly = (int)(screen_y - oy);
     ESP_LOGI(TAG, "tank tap (%d,%d) screen=(%d,%d)", lx, ly, screen_x, screen_y);
     anim_engine_handle_tap(eng, lx, ly);
 }

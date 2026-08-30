@@ -15,6 +15,8 @@ typedef struct {
     lv_obj_t *screen;
     lv_obj_t *lbl_title;
     lv_obj_t *lbl_temp;
+    lv_obj_t *btn_wifi;
+    lv_obj_t *lbl_wifi;
     lv_obj_t *bar_satiety;
     lv_obj_t *bar_water;
     lv_obj_t *lbl_satiety;
@@ -24,7 +26,10 @@ typedef struct {
     lv_obj_t *toast_bar;
     lv_obj_t *toast_lbl;
     lv_timer_t *toast_timer;
+    lv_timer_t *wifi_timer;
     bool provisioning;
+    bool wifi_connected_last;
+    bool wifi_status_known;
 } fish_ui_t;
 
 fish_ui_t *fish_ui_create(fish_config_t *cfg, bool provisioning);
@@ -34,6 +39,7 @@ void fish_ui_set_temp(fish_ui_t *ui, float temp, bool stale);
 void fish_ui_set_pin(fish_ui_t *ui, const char *pin);
 void fish_ui_show_toast(fish_ui_t *ui, const char *msg);
 void fish_ui_show_status(fish_ui_t *ui, const char *msg);
+void fish_ui_update_wifi_status(fish_ui_t *ui);
 
 #ifdef __cplusplus
 }

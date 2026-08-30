@@ -151,6 +151,7 @@ typedef struct {
     char bg_src_path[64];
     esp_timer_handle_t esp_timer;
     volatile bool lv_sync_pending;
+    bool paused;
     void (*on_interaction)(const char *action, const char *region, void *user);
     void *interaction_user;
     anim_sprite_preload_t sprite_preload[ANIM_MAX_FISH];
@@ -167,6 +168,7 @@ void anim_engine_set_interaction(anim_engine_t *eng, const fish_interaction_t *i
 void anim_engine_set_tap_mode(anim_engine_t *eng, fish_tap_mode_t mode);
 void anim_engine_start(anim_engine_t *eng);
 void anim_engine_stop(anim_engine_t *eng);
+void anim_engine_set_paused(anim_engine_t *eng, bool paused);
 void anim_engine_handle_tap(anim_engine_t *eng, int x, int y);
 /** Screen-space tap (works even when LVGL indev is stalled). */
 void anim_engine_screen_tap(anim_engine_t *eng, int screen_x, int screen_y);

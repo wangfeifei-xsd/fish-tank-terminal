@@ -20,6 +20,8 @@
 #include "sdkconfig.h"
 #include "anim_engine.h"
 #include "display_port.h"
+#include "wifi_manager.h"
+#include "wifi_setup.h"
 
 #define FISH_BAR_W      380
 #define FISH_BAR_H      18
@@ -201,6 +203,49 @@ static void btn_refresh_cb(lv_event_t *e)
     enqueue_job(ui, FISH_JOB_SYNC, NULL);
 }
 
+static void wifi_resume_cb(void *arg)
+{
+    fish_ui_t *ui = arg;
+    if (ui && ui->anim) {
+        anim_engine_set_paused(ui->anim, false);
+    }
+    if (ui) {
+        fish_ui_update_wifi_status(ui);
+    }
+}
+
+static void btn_wifi_cb(lv_event_t *e)
+{
+    fish_ui_t *ui = lv_event_get_user_data(e);
+    if (!ui || !ui->cfg || ui->provisioning) {
+        return;
+    }
+    if (ui->anim) {
+        anim_engine_set_paused(ui->anim, true);
+    }
+    fish_wifi_setup_open_from_ui(ui->cfg, ui->screen, wifi_resume_cb, ui);
+}
+
+static void wifi_status_timer_cb(lv_timer_t *t)
+{
+    fish_ui_t *ui = t->user_data;
+    fish_ui_update_wifi_status(ui);
+}
+
+void fish_ui_update_wifi_status(fish_ui_t *ui)
+{
+    if (!ui || !ui->lbl_wifi) {
+        return;
+    }
+    bool connected = fish_wifi_is_connected();
+    if (ui->wifi_status_known && connected == ui->wifi_connected_last) {
+        return;
+    }
+    ui->wifi_connected_last = connected;
+    ui->wifi_status_known = true;
+    lv_obj_set_style_text_color(ui->lbl_wifi, connected ? lv_color_hex(0x4ade80) : lv_color_hex(0xf87171), 0);
+}
+
 static void interaction_cb(const char *action, const char *region, void *user)
 {
     fish_ui_t *ui = user;
@@ -259,9 +304,18 @@ fish_ui_t *fish_ui_create(fish_config_t *cfg, bool provisioning)
     lv_obj_align(ui->lbl_title, LV_ALIGN_TOP_LEFT, 16, 14);
     lv_label_set_text(ui->lbl_title, cfg->device_name[0] ? cfg->device_name : "桌面鱼缸");
 
+    ui->btn_wifi = lv_btn_create(ui->screen);
+    lv_obj_set_size(ui->btn_wifi, 40, 40);
+    lv_obj_align(ui->btn_wifi, LV_ALIGN_TOP_RIGHT, -56, 8);
+    ui->lbl_wifi = lv_label_create(ui->btn_wifi);
+    lv_label_set_text(ui->lbl_wifi, LV_SYMBOL_WIFI);
+    lv_obj_center(ui->lbl_wifi);
+    lv_obj_add_event_cb(ui->btn_wifi, btn_wifi_cb, LV_EVENT_CLICKED, ui);
+    fish_ui_update_wifi_status(ui);
+
     lv_obj_t *btn_refresh = lv_btn_create(ui->screen);
-    lv_obj_set_size(btn_refresh, 56, 56);
-    lv_obj_align(btn_refresh, LV_ALIGN_TOP_RIGHT, -12, 10);
+    lv_obj_set_size(btn_refresh, 40, 40);
+    lv_obj_align(btn_refresh, LV_ALIGN_TOP_RIGHT, -10, 8);
     lv_obj_t *lbl_r = lv_label_create(btn_refresh);
     lv_label_set_text(lbl_r, LV_SYMBOL_REFRESH);
     lv_obj_center(lbl_r);
@@ -329,6 +383,9 @@ fish_ui_t *fish_ui_create(fish_config_t *cfg, bool provisioning)
     }
 
     ensure_worker();
+    if (!provisioning) {
+        ui->wifi_timer = lv_timer_create(wifi_status_timer_cb, 3000, ui);
+    }
     return ui;
 }
 
@@ -341,6 +398,10 @@ void fish_ui_destroy(fish_ui_t *ui)
     if (ui->toast_timer) {
         lv_timer_del(ui->toast_timer);
         ui->toast_timer = NULL;
+    }
+    if (ui->wifi_timer) {
+        lv_timer_del(ui->wifi_timer);
+        ui->wifi_timer = NULL;
     }
     if (ui->anim) {
         anim_engine_stop(ui->anim);
