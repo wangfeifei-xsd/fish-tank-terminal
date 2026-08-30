@@ -272,7 +272,9 @@ static void lvgl_port_task(void *arg)
         }
         else if (task_delay_ms < 2)
         {
+            /* LVGL still has pending work; yield so IDLE can run (avoids task WDT). */
             task_delay_ms = 2;
+            taskYIELD();
         }
         vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
     }

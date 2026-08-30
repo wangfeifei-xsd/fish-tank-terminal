@@ -133,6 +133,7 @@ typedef struct {
     float sim_accum;
     int64_t last_tick_us;
     int64_t last_tap_ms;
+    int64_t last_inv_ms;
     uint16_t *canvas_buf;
     lv_obj_t *canvas;
     lv_coord_t draw_ox;

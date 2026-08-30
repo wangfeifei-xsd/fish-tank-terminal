@@ -544,112 +544,82 @@ static void anim_update_water_overlay(anim_engine_t *eng)
     lv_obj_clear_flag(eng->overlay_water, LV_OBJ_FLAG_HIDDEN);
 }
 
-static int x_to_third(float x)
-{
-    int t = (int)(x / ((float)ANIM_W / 3.0f));
-    if (t < 0) {
-        t = 0;
-    }
-    if (t > 2) {
-        t = 2;
-    }
-    return t;
-}
-
-static void mark_thirds(bool dirty[3], float cx, float cy, float half, lv_coord_t view_h)
-{
-    (void)cy;
-    (void)view_h;
-    int lx = (int)(cx - half);
-    int hx = (int)(cx + half);
-    if (lx < 0) {
-        lx = 0;
-    }
-    if (hx >= ANIM_W) {
-        hx = ANIM_W - 1;
-    }
-    int t0 = x_to_third((float)lx);
-    int t1 = x_to_third((float)hx);
-    for (int t = t0; t <= t1; t++) {
-        dirty[t] = true;
-    }
-}
-
-static void anim_invalidate_thirds(anim_engine_t *eng, const bool dirty[3])
-{
-    lv_coord_t third_w = (lv_coord_t)(ANIM_W / 3);
-    for (int t = 0; t < 3; t++) {
-        if (!dirty[t]) {
-            continue;
-        }
-        lv_area_t area = {(lv_coord_t)(t * third_w), 0, (lv_coord_t)((t + 1) * third_w - 1),
-                          (lv_coord_t)(eng->view_h - 1)};
-        lv_obj_invalidate_area(eng->canvas, &area);
-    }
-}
-
 static void anim_invalidate_feed(anim_engine_t *eng)
 {
-    bool dirty[3] = {false, false, false};
+    float min_x = (float)ANIM_W;
+    float min_y = (float)eng->view_h;
+    float max_x = 0.0f;
+    float max_y = 0.0f;
+    bool any = false;
     const float pad = 48.0f;
     for (int i = 0; i < ANIM_MAX_PARTICLES; i++) {
         anim_particle_t *p = &eng->particles[i];
-        if (!p->eaten) {
-            mark_thirds(dirty, p->x, p->y, p->r + pad, eng->view_h);
+        if (p->eaten) {
+            continue;
+        }
+        any = true;
+        float lo_x = p->x - p->r - pad;
+        float hi_x = p->x + p->r + pad;
+        float lo_y = p->y - p->r - pad;
+        float hi_y = p->y + p->r + pad;
+        if (lo_x < min_x) {
+            min_x = lo_x;
+        }
+        if (hi_x > max_x) {
+            max_x = hi_x;
+        }
+        if (lo_y < min_y) {
+            min_y = lo_y;
+        }
+        if (hi_y > max_y) {
+            max_y = hi_y;
         }
     }
-    anim_invalidate_thirds(eng, dirty);
+    if (!any || !eng->canvas) {
+        return;
+    }
+    if (min_x < 0.0f) {
+        min_x = 0.0f;
+    }
+    if (min_y < 0.0f) {
+        min_y = 0.0f;
+    }
+    if (max_x >= (float)ANIM_W) {
+        max_x = (float)ANIM_W - 1.0f;
+    }
+    if (max_y >= (float)eng->view_h) {
+        max_y = (float)eng->view_h - 1.0f;
+    }
+    lv_area_t area = {
+        (lv_coord_t)min_x,
+        (lv_coord_t)min_y,
+        (lv_coord_t)max_x,
+        (lv_coord_t)max_y,
+    };
+    lv_obj_invalidate_area(eng->canvas, &area);
 }
+
+#define ANIM_INV_MIN_MS 33
 
 static void anim_invalidate_dirty(anim_engine_t *eng)
 {
     if (!eng || !eng->canvas) {
         return;
     }
+    if (!eng->feed_active && !eng->clean.active) {
+        return;
+    }
+    int64_t now = now_ms();
+    if (eng->last_inv_ms > 0 && (now - eng->last_inv_ms) < ANIM_INV_MIN_MS) {
+        return;
+    }
+    eng->last_inv_ms = now;
     if (eng->feed_active) {
         anim_invalidate_feed(eng);
     } else if (eng->clean.active) {
         lv_obj_invalidate(eng->canvas);
     }
 }
-
-static void anim_handle_screen_tap(anim_engine_t *eng, lv_coord_t sx, lv_coord_t sy)
-{
-    if (!eng || !eng->root) {
-        return;
-    }
-    int64_t now = now_ms();
-    if (eng->last_tap_ms > 0 && (now - eng->last_tap_ms) < 350) {
-        return;
-    }
-    eng->last_tap_ms = now;
-
-    lv_area_t a;
-    lv_obj_get_coords(eng->root, &a);
-    if (sx < a.x1 || sx > a.x2 || sy < a.y1 || sy > a.y2) {
-        return;
-    }
-    int lx = (int)(sx - a.x1);
-    int ly = (int)(sy - a.y1);
-    ESP_LOGI(TAG, "tank tap (%d,%d)", lx, ly);
-    anim_engine_handle_tap(eng, lx, ly);
-}
-
-static void anim_canvas_tap_cb(lv_event_t *e)
-{
-    anim_engine_t *eng = lv_event_get_user_data(e);
-    if (!eng || lv_event_get_code(e) != LV_EVENT_PRESSED) {
-        return;
-    }
-    lv_indev_t *indev = lv_indev_get_act();
-    if (!indev) {
-        return;
-    }
-    lv_point_t pt;
-    lv_indev_get_point(indev, &pt);
-    anim_handle_screen_tap(eng, pt.x, pt.y);
-}
-
 
 static void anim_update_bg_img(anim_engine_t *eng)
 {
@@ -1307,8 +1277,7 @@ anim_engine_t *anim_engine_create(lv_obj_t *parent)
     lv_obj_set_style_bg_color(eng->root, lv_color_hex(0x0ea5e9), 0);
     lv_obj_set_style_bg_opa(eng->root, LV_OPA_COVER, 0);
     lv_obj_clear_flag(eng->root, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(eng->root, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(eng->root, anim_canvas_tap_cb, LV_EVENT_PRESSED, eng);
+    lv_obj_clear_flag(eng->root, LV_OBJ_FLAG_CLICKABLE);
 
     eng->bg_img = lv_img_create(eng->root);
     lv_obj_set_size(eng->bg_img, ANIM_W, eng->view_h);
@@ -1336,9 +1305,8 @@ anim_engine_t *anim_engine_create(lv_obj_t *parent)
     lv_obj_align(eng->canvas, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_set_style_bg_opa(eng->canvas, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(eng->canvas, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(eng->canvas, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(eng->canvas, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(eng->canvas, anim_canvas_event, LV_EVENT_DRAW_MAIN, eng);
-    lv_obj_add_event_cb(eng->canvas, anim_canvas_tap_cb, LV_EVENT_PRESSED, eng);
     eng->canvas_buf = NULL;
     init_bubbles(eng);
     eng->tap_mode = FISH_TAP_FEED;
@@ -1588,7 +1556,12 @@ void anim_engine_screen_tap(anim_engine_t *eng, int screen_x, int screen_y)
     if (!eng || !eng->root || eng->paused) {
         return;
     }
-    /* Fixed layout; do not call lvgl_port_lock here (may run inside taskLVGL indev read). */
+    int64_t now = now_ms();
+    if (eng->last_tap_ms > 0 && (now - eng->last_tap_ms) < 350) {
+        return;
+    }
+    eng->last_tap_ms = now;
+    /* Fixed layout; tap is delivered via lv_async_call from display_port. */
     lv_coord_t ox = (lv_coord_t)((CONFIG_FISH_LOGICAL_WIDTH - ANIM_W) / 2);
     lv_coord_t oy = ANIM_CANVAS_TOP_Y;
     lv_coord_t view_h = eng->view_h;

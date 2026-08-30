@@ -232,6 +232,17 @@ static void wifi_status_timer_cb(lv_timer_t *t)
     fish_ui_update_wifi_status(ui);
 }
 
+void fish_ui_set_content_ready(fish_ui_t *ui)
+{
+    if (!ui || ui->content_ready) {
+        return;
+    }
+    ui->content_ready = true;
+    if (ui->loading_panel) {
+        lv_obj_add_flag(ui->loading_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void fish_ui_update_wifi_status(fish_ui_t *ui)
 {
     if (!ui || !ui->lbl_wifi) {
@@ -342,7 +353,6 @@ fish_ui_t *fish_ui_create(fish_config_t *cfg, bool provisioning)
 
     ui->anim = anim_engine_create(ui->screen);
     anim_engine_set_interaction_cb(ui->anim, interaction_cb, ui);
-    anim_engine_start(ui->anim);
     fish_display_set_tank_tap_handler(on_display_tank_tap, ui);
 
     ui->bar_satiety = lv_bar_create(ui->screen);
@@ -380,6 +390,26 @@ fish_ui_t *fish_ui_create(fish_config_t *cfg, bool provisioning)
         if (anim_root) {
             lv_obj_move_foreground(anim_root);
         }
+    }
+
+    if (provisioning) {
+        ui->content_ready = true;
+        anim_engine_start(ui->anim);
+    } else {
+        ui->loading_panel = lv_obj_create(ui->screen);
+        lv_obj_set_size(ui->loading_panel, CONFIG_FISH_LOGICAL_WIDTH, CONFIG_FISH_LOGICAL_HEIGHT);
+        lv_obj_align(ui->loading_panel, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_set_style_bg_color(ui->loading_panel, lv_color_hex(0x0f172a), 0);
+        lv_obj_set_style_bg_opa(ui->loading_panel, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(ui->loading_panel, 0, 0);
+        lv_obj_set_style_radius(ui->loading_panel, 0, 0);
+        lv_obj_clear_flag(ui->loading_panel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_t *loading_lbl = lv_label_create(ui->loading_panel);
+        lv_obj_set_style_text_color(loading_lbl, lv_color_hex(0x94a3b8), 0);
+        lv_obj_set_style_text_font(loading_lbl, &fish_font_24, 0);
+        lv_label_set_text(loading_lbl, "加载中");
+        lv_obj_center(loading_lbl);
+        lv_obj_move_foreground(ui->loading_panel);
     }
 
     ensure_worker();

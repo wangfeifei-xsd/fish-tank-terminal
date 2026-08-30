@@ -1,5 +1,7 @@
 #include "display_port.h"
 
+#include <stdlib.h>
+
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_lvgl_port_disp.h"
@@ -13,6 +15,22 @@ static lv_disp_t *s_disp;
 static fish_tank_tap_fn s_tank_tap_fn;
 static void *s_tank_tap_user;
 static bool s_touch_was_down;
+
+typedef struct {
+    fish_tank_tap_fn fn;
+    void *user;
+    int x;
+    int y;
+} fish_tap_async_t;
+
+static void fish_tap_async_cb(void *user_data)
+{
+    fish_tap_async_t *req = user_data;
+    if (req && req->fn) {
+        req->fn(req->x, req->y, req->user);
+    }
+    free(req);
+}
 
 void fish_touch_transform(int raw_x, int raw_y, int *out_x, int *out_y)
 {
@@ -49,7 +67,15 @@ static void touchpad_read(lv_indev_drv_t *drv, lv_indev_data_t *data)
         if (!s_touch_was_down) {
             ESP_LOGD(TAG, "touch raw=(%d,%d) mapped=(%d,%d)", tp_dev.x[0], tp_dev.y[0], lx, ly);
             if (s_tank_tap_fn) {
-                s_tank_tap_fn(lx, ly, s_tank_tap_user);
+                /* Defer: do not invalidate UI from inside taskLVGL indev read. */
+                fish_tap_async_t *req = malloc(sizeof(*req));
+                if (req) {
+                    req->fn = s_tank_tap_fn;
+                    req->user = s_tank_tap_user;
+                    req->x = lx;
+                    req->y = ly;
+                    lv_async_call(fish_tap_async_cb, req);
+                }
             }
         }
         s_touch_was_down = true;
@@ -138,6 +164,13 @@ void fish_display_init(void)
         lv_disp_set_theme(s_disp, th);
         s_boot_scr = lv_obj_create(NULL);
         lv_obj_set_style_bg_color(s_boot_scr, lv_color_hex(0x0f172a), 0);
+        lv_obj_set_style_bg_opa(s_boot_scr, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(s_boot_scr, 0, 0);
+        lv_obj_t *boot_lbl = lv_label_create(s_boot_scr);
+        lv_obj_set_style_text_color(boot_lbl, lv_color_hex(0x94a3b8), 0);
+        lv_obj_set_style_text_font(boot_lbl, &fish_font_24, 0);
+        lv_label_set_text(boot_lbl, "加载中");
+        lv_obj_center(boot_lbl);
         lv_scr_load(s_boot_scr);
         lvgl_port_unlock();
     }

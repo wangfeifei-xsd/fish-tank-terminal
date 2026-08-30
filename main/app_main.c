@@ -71,6 +71,7 @@ static bool apply_tank_ui_locked(uint32_t wait_ms)
         return false;
     }
     fish_ui_set_tank(s_ui, &s_tank);
+    fish_ui_set_content_ready(s_ui);
     if (s_ui->anim) {
         anim_engine_start(s_ui->anim);
     }
@@ -240,8 +241,10 @@ static void boot_cache_task(void *arg)
     (void)arg;
     if (fish_cache_load_local(&s_tank) == ESP_OK) {
         ESP_LOGI(TAG, "showing cached tank while network sync runs");
-        apply_tank_to_ui();
+    } else {
+        ESP_LOGW(TAG, "no local cache, showing empty tank");
     }
+    apply_tank_to_ui();
     s_boot_cache_task = NULL;
     vTaskDelete(NULL);
 }
@@ -383,6 +386,10 @@ static void app_task(void *arg)
             }
             if (lvgl_port_lock(0)) {
                 fish_ui_set_tank(s_ui, &s_tank);
+                fish_ui_set_content_ready(s_ui);
+                if (s_ui->anim) {
+                    anim_engine_start(s_ui->anim);
+                }
                 lvgl_port_unlock();
             }
         }
@@ -391,8 +398,9 @@ static void app_task(void *arg)
 
     if (!provisioning) {
         if (xTaskCreate(boot_cache_task, "boot_cache", FISH_WIFI_SYNC_STACK, NULL, 4, &s_boot_cache_task) != pdPASS) {
-            ESP_LOGE(TAG, "boot_cache task create failed");
+            ESP_LOGE(TAG, "boot_cache task create failed, apply tank inline");
             s_boot_cache_task = NULL;
+            apply_tank_to_ui();
         }
         fish_wifi_connect(&s_cfg);
         start_online_services();

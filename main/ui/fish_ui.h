@@ -25,8 +25,10 @@ typedef struct {
     lv_obj_t *lbl_pin;
     lv_obj_t *toast_bar;
     lv_obj_t *toast_lbl;
+    lv_obj_t *loading_panel;
     lv_timer_t *toast_timer;
     lv_timer_t *wifi_timer;
+    bool content_ready;
     bool provisioning;
     bool wifi_connected_last;
     bool wifi_status_known;
@@ -40,6 +42,8 @@ void fish_ui_set_pin(fish_ui_t *ui, const char *pin);
 void fish_ui_show_toast(fish_ui_t *ui, const char *msg);
 void fish_ui_show_status(fish_ui_t *ui, const char *msg);
 void fish_ui_update_wifi_status(fish_ui_t *ui);
+/** Hide boot loading overlay once tank assets are on screen (idempotent). */
+void fish_ui_set_content_ready(fish_ui_t *ui);
 
 #ifdef __cplusplus
 }
