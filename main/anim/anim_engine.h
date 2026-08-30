@@ -3,11 +3,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "esp_timer.h"
 #include "lvgl.h"
 #include "device_api.h"
 #include "esp_err.h"
 #include "resource_cache.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,11 +22,6 @@ extern "C" {
 #define ANIM_MAX_FISH FISH_MAX_FISH
 #define ANIM_MAX_BUBBLES 12
 #define ANIM_MAX_PARTICLES 3
-
-typedef enum {
-    FISH_TAP_FEED = 0,
-    FISH_TAP_CLEAN,
-} fish_tap_mode_t;
 
 typedef struct {
     float x, y, base_y, target_base_y;
@@ -90,21 +86,6 @@ typedef struct {
 } anim_hand_t;
 
 typedef struct {
-    bool active;
-    char region[8];
-    float x0, x1;
-    int64_t start_ms;
-    int dur_ms;
-    int sweep_dir;
-} anim_clean_t;
-
-typedef struct {
-    bool active;
-    int64_t start_ms;
-    int dur_ms;
-} anim_water_t;
-
-typedef struct {
     bool ready;
     lv_img_dsc_t dsc;
     lv_img_dsc_t flip_dsc;
@@ -121,8 +102,6 @@ typedef struct {
     anim_bubble_t bubbles[ANIM_MAX_BUBBLES];
     anim_particle_t particles[ANIM_MAX_PARTICLES];
     anim_hand_t hand;
-    anim_clean_t clean;
-    anim_water_t water;
     bool feed_active;
     fish_interaction_t interaction;
     fish_tank_state_t *tank;
@@ -130,8 +109,6 @@ typedef struct {
     int frame;
     float step_dt;
     float sim_time;
-    float sim_accum;
-    int64_t last_tick_us;
     int64_t last_tap_ms;
     int64_t last_inv_ms;
     uint16_t *canvas_buf;
@@ -139,18 +116,15 @@ typedef struct {
     lv_coord_t draw_ox;
     lv_coord_t draw_oy;
     lv_coord_t view_h;
-    fish_tap_mode_t tap_mode;
     bool has_interaction;
     lv_obj_t *root;
     lv_obj_t *bg_img;
-    lv_obj_t *overlay_vignette;
-    lv_obj_t *overlay_water;
-    lv_obj_t *algae_band[3];
     lv_obj_t *deco_img[FISH_MAX_DECO];
     lv_img_dsc_t bg_dsc;
     uint8_t *bg_buf;
     char bg_src_path[64];
-    esp_timer_handle_t esp_timer;
+    TaskHandle_t sim_task;
+    volatile bool sim_running;
     volatile bool lv_sync_pending;
     bool paused;
     void (*on_interaction)(const char *action, const char *region, void *user);
@@ -166,7 +140,6 @@ esp_err_t anim_engine_prepare_fish(anim_engine_t *eng, fish_tank_state_t *tank);
 esp_err_t anim_engine_prepare_assets(anim_engine_t *eng, fish_tank_state_t *tank);
 void anim_engine_set_tank(anim_engine_t *eng, fish_tank_state_t *tank);
 void anim_engine_set_interaction(anim_engine_t *eng, const fish_interaction_t *it);
-void anim_engine_set_tap_mode(anim_engine_t *eng, fish_tap_mode_t mode);
 void anim_engine_start(anim_engine_t *eng);
 void anim_engine_stop(anim_engine_t *eng);
 void anim_engine_set_paused(anim_engine_t *eng, bool paused);
@@ -174,7 +147,6 @@ void anim_engine_handle_tap(anim_engine_t *eng, int x, int y);
 /** Screen-space tap (works even when LVGL indev is stalled). */
 void anim_engine_screen_tap(anim_engine_t *eng, int screen_x, int screen_y);
 void anim_engine_trigger_feed(anim_engine_t *eng, int x, int y);
-void anim_engine_trigger_water(anim_engine_t *eng);
 void anim_engine_set_interaction_cb(anim_engine_t *eng, void (*cb)(const char *, const char *, void *), void *user);
 
 /** Root LVGL object (for z-order / layout). */

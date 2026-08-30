@@ -297,7 +297,7 @@ static void online_services_task(void *arg)
     }
 
     ESP_LOGI(TAG, "online_services: start poll task");
-    if (xTaskCreate(poll_task, "poll", 8192, NULL, 4, NULL) != pdPASS) {
+    if (xTaskCreatePinnedToCore(poll_task, "poll", 8192, NULL, 4, NULL, 0) != pdPASS) {
         ESP_LOGE(TAG, "online_services: poll task create failed");
     }
     ESP_LOGI(TAG, "online_services: done");
@@ -306,7 +306,7 @@ static void online_services_task(void *arg)
 
 static void start_online_services(void)
 {
-    if (xTaskCreate(online_services_task, "fish_online", FISH_ONLINE_STACK_WORDS, NULL, 4, NULL) != pdPASS) {
+    if (xTaskCreatePinnedToCore(online_services_task, "fish_online", FISH_ONLINE_STACK_WORDS, NULL, 4, NULL, 0) != pdPASS) {
         ESP_LOGE(TAG, "fish_online task create failed (stack=%u words)",
                  (unsigned)FISH_ONLINE_STACK_WORDS);
     }
@@ -397,7 +397,7 @@ static void app_task(void *arg)
 #endif
 
     if (!provisioning) {
-        if (xTaskCreate(boot_cache_task, "boot_cache", FISH_WIFI_SYNC_STACK, NULL, 4, &s_boot_cache_task) != pdPASS) {
+        if (xTaskCreatePinnedToCore(boot_cache_task, "boot_cache", FISH_WIFI_SYNC_STACK, NULL, 4, &s_boot_cache_task, 0) != pdPASS) {
             ESP_LOGE(TAG, "boot_cache task create failed, apply tank inline");
             s_boot_cache_task = NULL;
             apply_tank_to_ui();
@@ -414,5 +414,5 @@ static void app_task(void *arg)
 
 void app_main(void)
 {
-    xTaskCreate(app_task, "fish_app", 24576, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(app_task, "fish_app", 24576, NULL, 5, NULL, 0);
 }

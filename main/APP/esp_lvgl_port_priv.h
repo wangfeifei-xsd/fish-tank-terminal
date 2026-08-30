@@ -31,6 +31,9 @@ typedef struct {
  */
 bool lvgl_port_task_notify(uint32_t value);
 
+/** Count one completed display frame (called from flush on last push). */
+void lvgl_port_frame_done(void);
+
 #ifdef __cplusplus
 }
 #endif

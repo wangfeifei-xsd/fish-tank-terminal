@@ -389,67 +389,6 @@ esp_err_t fish_api_feed(const char *tank_id, fish_interaction_t *out)
 #endif
 }
 
-esp_err_t fish_api_clean(const char *tank_id, const char *region, fish_interaction_t *out)
-{
-    char body[160];
-    snprintf(body, sizeof(body), "{\"tankId\":\"%s\",\"region\":\"%s\"}", tank_id ? tank_id : "", region ? region : "left");
-#if CONFIG_FISH_MOCK_API
-    if (out) {
-        if (region && strcmp(region, "left") == 0) {
-            out->algae_left = 0;
-        } else if (region && strcmp(region, "mid") == 0) {
-            out->algae_mid = 0;
-        } else {
-            out->algae_right = 0;
-        }
-        out->algae_level = out->algae_left;
-        if (out->algae_mid > out->algae_level) {
-            out->algae_level = out->algae_mid;
-        }
-        if (out->algae_right > out->algae_level) {
-            out->algae_level = out->algae_right;
-        }
-    }
-    return ESP_OK;
-#else
-    char *resp = malloc(FISH_INTERACTION_RESP_MAX);
-    if (!resp) {
-        return ESP_ERR_NO_MEM;
-    }
-    int code = 0;
-    esp_err_t err = signed_request("POST", "/api/tank/clean", "/api/tank/clean", body, resp, FISH_INTERACTION_RESP_MAX, &code);
-    if (err == ESP_OK && out) {
-        fish_api_parse_interaction(resp, out);
-    }
-    free(resp);
-    return err;
-#endif
-}
-
-esp_err_t fish_api_water(const char *tank_id, const char *mode, fish_interaction_t *out)
-{
-    char body[160];
-    snprintf(body, sizeof(body), "{\"tankId\":\"%s\",\"mode\":\"%s\"}", tank_id ? tank_id : "", mode ? mode : "virtual");
-#if CONFIG_FISH_MOCK_API
-    if (out) {
-        out->water_quality = 10;
-    }
-    return ESP_OK;
-#else
-    char *resp = malloc(FISH_INTERACTION_RESP_MAX);
-    if (!resp) {
-        return ESP_ERR_NO_MEM;
-    }
-    int code = 0;
-    esp_err_t err = signed_request("POST", "/api/tank/water", "/api/tank/water", body, resp, FISH_INTERACTION_RESP_MAX, &code);
-    if (err == ESP_OK && out) {
-        fish_api_parse_interaction(resp, out);
-    }
-    free(resp);
-    return err;
-#endif
-}
-
 esp_err_t fish_api_temp_latest(fish_temp_info_t *out)
 {
     if (!out) {

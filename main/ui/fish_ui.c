@@ -29,8 +29,6 @@
 
 typedef enum {
     FISH_JOB_FEED = 0,
-    FISH_JOB_CLEAN,
-    FISH_JOB_WATER,
     FISH_JOB_SYNC,
 } fish_job_type_t;
 
@@ -66,9 +64,6 @@ static void job_result_apply(void *user_data)
         anim_engine_set_interaction(r->ui->anim, &r->interaction);
         if (r->ui->bar_satiety) {
             lv_bar_set_value(r->ui->bar_satiety, r->interaction.satiety, LV_ANIM_OFF);
-        }
-        if (r->ui->bar_water) {
-            lv_bar_set_value(r->ui->bar_water, r->interaction.water_quality, LV_ANIM_OFF);
         }
         if (r->ui->tank) {
             r->ui->tank->interaction = r->interaction;
@@ -112,22 +107,6 @@ static void api_worker_task(void *arg)
                 strncpy(res->toast, "喂食失败", sizeof(res->toast) - 1);
             }
             break;
-        case FISH_JOB_CLEAN:
-            if (fish_api_clean(ui->cfg->tank_id, job.region[0] ? job.region : "left", &res->interaction) == ESP_OK) {
-                res->has_interaction = true;
-                strncpy(res->toast, "刮藻完成", sizeof(res->toast) - 1);
-            } else {
-                strncpy(res->toast, "刮藻失败", sizeof(res->toast) - 1);
-            }
-            break;
-        case FISH_JOB_WATER:
-            if (fish_api_water(ui->cfg->tank_id, "virtual", &res->interaction) == ESP_OK) {
-                res->has_interaction = true;
-                strncpy(res->toast, "换水完成", sizeof(res->toast) - 1);
-            } else {
-                strncpy(res->toast, "换水失败", sizeof(res->toast) - 1);
-            }
-            break;
 #define FISH_CANVAS_H ANIM_VIEW_H
 
         case FISH_JOB_SYNC:
@@ -162,7 +141,7 @@ static void ensure_worker(void)
         return;
     }
     /* HTTPS/mbedtls needs headroom; interaction buffers are heap-backed. */
-    if (xTaskCreate(api_worker_task, "fish_api", 24576, NULL, 4, NULL) == pdPASS) {
+    if (xTaskCreatePinnedToCore(api_worker_task, "fish_api", 24576, NULL, 4, NULL, 0) == pdPASS) {
         s_worker_started = true;
     }
 }
@@ -270,10 +249,6 @@ static void interaction_cb(const char *action, const char *region, void *user)
         }
         s_last_feed_job_ms = now;
         enqueue_job(ui, FISH_JOB_FEED, NULL);
-    } else if (strcmp(action, "clean") == 0) {
-        enqueue_job(ui, FISH_JOB_CLEAN, region);
-    } else if (strcmp(action, "water") == 0) {
-        enqueue_job(ui, FISH_JOB_WATER, NULL);
     }
 }
 
@@ -363,14 +338,6 @@ fish_ui_t *fish_ui_create(fish_config_t *cfg, bool provisioning)
     lv_label_set_text(ui->lbl_satiety, "饱食");
     lv_obj_align_to(ui->lbl_satiety, ui->bar_satiety, LV_ALIGN_OUT_TOP_LEFT, 0, -6);
 
-    ui->bar_water = lv_bar_create(ui->screen);
-    lv_obj_set_size(ui->bar_water, FISH_BAR_W, FISH_BAR_H);
-    lv_obj_align(ui->bar_water, LV_ALIGN_BOTTOM_LEFT, 16 + FISH_BAR_W + 40, -FISH_BAR_BOTTOM);
-    lv_bar_set_range(ui->bar_water, 0, 10);
-    ui->lbl_water = lv_label_create(ui->screen);
-    lv_label_set_text(ui->lbl_water, "水质");
-    lv_obj_align_to(ui->lbl_water, ui->bar_water, LV_ALIGN_OUT_TOP_LEFT, 0, -6);
-
     ui->toast_bar = lv_obj_create(ui->screen);
     lv_obj_set_size(ui->toast_bar, 420, 52);
     lv_obj_align(ui->toast_bar, LV_ALIGN_TOP_MID, 0, 88);
@@ -454,9 +421,6 @@ void fish_ui_set_tank(fish_ui_t *ui, fish_tank_state_t *tank)
     }
     if (ui->bar_satiety) {
         lv_bar_set_value(ui->bar_satiety, tank->interaction.satiety, LV_ANIM_OFF);
-    }
-    if (ui->bar_water) {
-        lv_bar_set_value(ui->bar_water, tank->interaction.water_quality, LV_ANIM_OFF);
     }
 }
 

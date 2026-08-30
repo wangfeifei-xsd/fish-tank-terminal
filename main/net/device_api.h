@@ -61,8 +61,6 @@ bool fish_api_pick_first_tank_id(const char *list_json, char *tank_id, size_t ta
 esp_err_t fish_api_fetch_first_tank_id(char *tank_id, size_t tank_id_len);
 esp_err_t fish_api_tank_detail(const char *tank_id, char *json_out, size_t out_len);
 esp_err_t fish_api_feed(const char *tank_id, fish_interaction_t *out);
-esp_err_t fish_api_clean(const char *tank_id, const char *region, fish_interaction_t *out);
-esp_err_t fish_api_water(const char *tank_id, const char *mode, fish_interaction_t *out);
 esp_err_t fish_api_temp_latest(fish_temp_info_t *out);
 esp_err_t fish_api_bind(const char *device_id, const char *device_name);
 esp_err_t fish_api_deco_list(char *json_out, size_t out_len);

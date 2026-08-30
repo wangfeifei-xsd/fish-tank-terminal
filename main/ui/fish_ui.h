@@ -18,9 +18,7 @@ typedef struct {
     lv_obj_t *btn_wifi;
     lv_obj_t *lbl_wifi;
     lv_obj_t *bar_satiety;
-    lv_obj_t *bar_water;
     lv_obj_t *lbl_satiety;
-    lv_obj_t *lbl_water;
     lv_obj_t *provision_panel;
     lv_obj_t *lbl_pin;
     lv_obj_t *toast_bar;

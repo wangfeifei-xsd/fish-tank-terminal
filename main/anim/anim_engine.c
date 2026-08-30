@@ -10,6 +10,8 @@
 #include "esp_err.h"
 #include "esp_lvgl_port.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "fish_img.h"
 #include "fonts/fish_font_24.h"
 #include "lvgl.h"
@@ -324,9 +326,9 @@ static void rebuild_fishes(anim_engine_t *eng)
             amp_mul = 1.4f;
             f->pause_prob = 0.0006f;
         }
-        f->vx = (14.0f + randf() * 20.0f) * speed_mul;
+        f->vx = (56.0f + randf() * 80.0f) * speed_mul;
         f->amp = (3.0f + randf() * 5.0f) * amp_mul;
-        f->freq = 0.5f + randf() * 0.6f;
+        f->freq = 1.0f + randf() * 1.0f;
         f->phase = randf() * 6.283f;
         f->size = src->size_cm * eng->px_per_cm;
         if (f->size < 4) {
@@ -401,7 +403,7 @@ static void rebuild_fishes(anim_engine_t *eng)
 
 static void init_bubble_widgets(anim_engine_t *eng);
 static void sync_bubble_widgets(anim_engine_t *eng);
-static void anim_update_algae_bands(anim_engine_t *eng);
+static void anim_sim_step(anim_engine_t *eng);
 
 static void init_bubbles(anim_engine_t *eng)
 {
@@ -469,48 +471,6 @@ static void sync_bubble_widgets(anim_engine_t *eng)
     }
 }
 
-static void anim_update_algae_bands(anim_engine_t *eng)
-{
-    if (!eng || !eng->root) {
-        return;
-    }
-    int levels[3] = {0, 0, 0};
-    if (eng->has_interaction) {
-        levels[0] = eng->interaction.algae_left;
-        levels[1] = eng->interaction.algae_mid;
-        levels[2] = eng->interaction.algae_right;
-    }
-    lv_coord_t third_w = (lv_coord_t)(ANIM_W / 3);
-    for (int i = 0; i < 3; i++) {
-        if (!eng->algae_band[i]) {
-            eng->algae_band[i] = lv_obj_create(eng->root);
-            lv_obj_remove_style_all(eng->algae_band[i]);
-            lv_obj_clear_flag(eng->algae_band[i], LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_set_style_bg_color(eng->algae_band[i], lv_color_hex(0x22783c), 0);
-        }
-        if (levels[i] <= 0) {
-            lv_obj_add_flag(eng->algae_band[i], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        lv_opa_t opa = (lv_opa_t)fminf(160.0f, 24.0f + (float)levels[i] * 18.0f);
-        lv_obj_set_size(eng->algae_band[i], third_w, eng->view_h);
-        lv_obj_set_pos(eng->algae_band[i], i * third_w, 0);
-        lv_obj_set_style_bg_opa(eng->algae_band[i], opa, 0);
-        lv_obj_clear_flag(eng->algae_band[i], LV_OBJ_FLAG_HIDDEN);
-    }
-    if (eng->canvas) {
-        lv_obj_move_foreground(eng->canvas);
-    }
-}
-
-static float water_speed_mul(const anim_engine_t *eng)
-{
-    if (eng->interaction.water_quality <= 3) {
-        return 0.5f;
-    }
-    return 1.0f;
-}
-
 static inline lv_coord_t ax(const anim_engine_t *eng, float x)
 {
     return eng->draw_ox + (lv_coord_t)x;
@@ -519,29 +479,6 @@ static inline lv_coord_t ax(const anim_engine_t *eng, float x)
 static inline lv_coord_t ay(const anim_engine_t *eng, float y)
 {
     return eng->draw_oy + (lv_coord_t)y;
-}
-
-static void anim_update_water_overlay(anim_engine_t *eng)
-{
-    if (!eng || !eng->overlay_water) {
-        return;
-    }
-    if (!eng->has_interaction) {
-        lv_obj_add_flag(eng->overlay_water, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    int q = eng->interaction.water_quality;
-    if (q >= 7) {
-        lv_obj_add_flag(eng->overlay_water, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    if (q < 0) {
-        q = 0;
-    }
-    lv_opa_t alpha = (lv_opa_t)((7.0f - (float)q) / 7.0f * 89.0f);
-    lv_obj_set_style_bg_color(eng->overlay_water, lv_color_hex(0xb49628), 0);
-    lv_obj_set_style_bg_opa(eng->overlay_water, alpha, 0);
-    lv_obj_clear_flag(eng->overlay_water, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void anim_invalidate_feed(anim_engine_t *eng)
@@ -603,10 +540,7 @@ static void anim_invalidate_feed(anim_engine_t *eng)
 
 static void anim_invalidate_dirty(anim_engine_t *eng)
 {
-    if (!eng || !eng->canvas) {
-        return;
-    }
-    if (!eng->feed_active && !eng->clean.active) {
+    if (!eng || !eng->canvas || !eng->feed_active) {
         return;
     }
     int64_t now = now_ms();
@@ -614,11 +548,7 @@ static void anim_invalidate_dirty(anim_engine_t *eng)
         return;
     }
     eng->last_inv_ms = now;
-    if (eng->feed_active) {
-        anim_invalidate_feed(eng);
-    } else if (eng->clean.active) {
-        lv_obj_invalidate(eng->canvas);
-    }
+    anim_invalidate_feed(eng);
 }
 
 static void anim_update_bg_img(anim_engine_t *eng)
@@ -666,51 +596,6 @@ static void draw_decorations(anim_engine_t *eng, lv_draw_ctx_t *ctx)
     }
 }
 
-static void draw_algae(anim_engine_t *eng, lv_draw_ctx_t *ctx)
-{
-    const fish_interaction_t *it = &eng->interaction;
-    int levels[3] = {it->algae_left, it->algae_mid, it->algae_right};
-    int max_lv = levels[0];
-    if (levels[1] > max_lv) {
-        max_lv = levels[1];
-    }
-    if (levels[2] > max_lv) {
-        max_lv = levels[2];
-    }
-    if (max_lv <= 0) {
-        return;
-    }
-
-    float third = (float)ANIM_W / 3.0f;
-    float view_h = (float)eng->view_h;
-    uint32_t seed = 12345;
-    int count = max_lv * 3;
-    if (count > 18) {
-        count = 18;
-    }
-    for (int i = 0; i < count; i++) {
-        seed = seed * 9301 + 49297;
-        float rx = (float)(seed % 233280) / 233280.0f;
-        seed = seed * 9301 + 49297;
-        float ry = (float)(seed % 233280) / 233280.0f;
-        float x = rx * ANIM_W;
-        float y = view_h * (0.55f + ry * 0.4f);
-        float lv = x < third ? (float)levels[0] : (x < third * 2 ? (float)levels[1] : (float)levels[2]);
-        if (lv <= 0.01f) {
-            continue;
-        }
-        seed = seed * 9301 + 49297;
-        float rr = 6.0f + (float)(seed % 233280) / 233280.0f * 10.0f;
-        lv_draw_rect_dsc_t dsc;
-        lv_draw_rect_dsc_init(&dsc);
-        dsc.radius = (lv_coord_t)rr;
-        dsc.bg_color = lv_color_hex(0x22783c);
-        dsc.bg_opa = (lv_opa_t)fminf(160, 24 + lv * 18);
-        lv_area_t a = {ax(eng, x - rr), ay(eng, y - rr), ax(eng, x + rr), ay(eng, y + rr)};
-        lv_draw_rect(ctx, &dsc, &a);
-    }
-}
-
 static void draw_bubble_text(anim_engine_t *eng, lv_draw_ctx_t *ctx, anim_fish_t *f)
 {
     if (!f->bubble_text[0] || now_ms() > (int64_t)f->bubble_until) {
@@ -734,31 +619,19 @@ static void update_status_bubble(anim_engine_t *eng, anim_fish_t *f)
         return;
     }
     int sev_h = it->satiety <= 1 ? 2 : (it->satiety <= 3 ? 1 : 0);
-    int sev_w = it->water_quality <= 3 ? 2 : (it->water_quality <= 5 ? 1 : 0);
-    int sev_a = it->algae_level >= 4 ? 2 : (it->algae_level >= 2 ? 1 : 0);
-    int max_sev = sev_h > sev_w ? sev_h : sev_w;
-    if (sev_a > max_sev) {
-        max_sev = sev_a;
-    }
-    if (max_sev == 0) {
+    if (sev_h == 0) {
         return;
     }
     if (now < (int64_t)f->bubble_until || now < (int64_t)f->bubble_cooldown) {
         return;
     }
-    float rate = max_sev == 2 ? 0.05f : 0.015f;
+    float rate = sev_h == 2 ? 0.05f : 0.015f;
     if (randf() > rate) {
         return;
     }
-    if (sev_h >= max_sev) {
-        strncpy(f->bubble_text, it->satiety <= 1 ? "求投喂!" : "有点饿了…", sizeof(f->bubble_text) - 1);
-    } else if (sev_w >= max_sev) {
-        strncpy(f->bubble_text, it->water_quality <= 3 ? "好臭啊!" : "水有点浑浊…", sizeof(f->bubble_text) - 1);
-    } else {
-        strncpy(f->bubble_text, it->algae_level >= 4 ? "快刮藻!!" : "有点看不清", sizeof(f->bubble_text) - 1);
-    }
+    strncpy(f->bubble_text, it->satiety <= 1 ? "求投喂!" : "有点饿了…", sizeof(f->bubble_text) - 1);
     f->bubble_until = (float)(now + 1200 + rand() % 1800);
-    f->bubble_cooldown = (float)(now + (max_sev == 2 ? 2500 : 3500) + rand() % 3500);
+    f->bubble_cooldown = (float)(now + (sev_h == 2 ? 2500 : 3500) + rand() % 3500);
 }
 
 static void draw_fish_sprite(anim_engine_t *eng, lv_draw_ctx_t *ctx, anim_fish_t *f)
@@ -1034,7 +907,7 @@ static void update_fish(anim_engine_t *eng, anim_fish_t *f, int fi, float t)
             if (randf() < f->pause_prob) {
                 f->pause_until = now + 500 + randf() * 1800;
             } else {
-                f->x += (float)f->dir * f->vx * water_speed_mul(eng) * dt;
+                f->x += (float)f->dir * f->vx * dt;
             }
             float margin = f->size / 2 + 4;
             if ((f->x <= margin && f->dir == -1) || (f->x >= W - margin && f->dir == 1)) {
@@ -1157,33 +1030,6 @@ static void draw_particles(anim_engine_t *eng, lv_draw_ctx_t *ctx)
     }
 }
 
-static void draw_clean_fx(anim_engine_t *eng, lv_draw_ctx_t *ctx)
-{
-    if (!eng->clean.active) {
-        return;
-    }
-    int64_t elapsed = now_ms() - eng->clean.start_ms;
-    float p = (float)elapsed / (float)eng->clean.dur_ms;
-    if (p >= 1.0f) {
-        eng->clean.active = false;
-        return;
-    }
-    float ease = 1.0f - (1.0f - p) * (1.0f - p);
-    float sweep_y = (float)eng->view_h * ease;
-    lv_draw_rect_dsc_t dsc;
-    lv_draw_rect_dsc_init(&dsc);
-    dsc.bg_color = lv_color_white();
-    dsc.bg_opa = (lv_opa_t)(128 * (1.0f - ease));
-    lv_area_t a = {ax(eng, eng->clean.x0), ay(eng, 0), ax(eng, eng->clean.x1), ay(eng, sweep_y)};
-    lv_draw_rect(ctx, &dsc, &a);
-}
-
-static bool area_intersects_clip(const lv_area_t *clip, lv_area_t *box)
-{
-    lv_area_t overlap;
-    return _lv_area_intersect(&overlap, clip, box);
-}
-
 static void anim_canvas_event(lv_event_t *e)
 {
     anim_engine_t *eng = lv_event_get_user_data(e);
@@ -1197,9 +1043,6 @@ static void anim_canvas_event(lv_event_t *e)
     eng->draw_oy = coords.y1;
     if (eng->feed_active) {
         draw_particles(eng, ctx);
-    }
-    if (eng->clean.active) {
-        draw_clean_fx(eng, ctx);
     }
 }
 
@@ -1215,46 +1058,34 @@ static void anim_lv_sync_cb(void *user)
     anim_invalidate_dirty(eng);
 }
 
-static void anim_esp_timer_cb(void *arg)
+static void anim_sim_task(void *arg)
 {
     anim_engine_t *eng = arg;
-    if (!eng || eng->paused) {
-        return;
-    }
-    int64_t now_us = esp_timer_get_time();
-    float real_dt = DT;
-    if (eng->last_tick_us > 0) {
-        real_dt = (float)(now_us - eng->last_tick_us) / 1000000.0f;
-    }
-    eng->last_tick_us = now_us;
-    if (real_dt < 0.001f) {
-        real_dt = 0.001f;
-    }
-    if (real_dt > 0.25f) {
-        real_dt = 0.25f;
-    }
+    TickType_t last_wake = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(ANIM_TIMER_MS);
 
-    eng->sim_accum += real_dt;
-    int steps = 0;
-    while (eng->sim_accum >= DT && steps < 5) {
-        eng->sim_accum -= DT;
+    while (eng && eng->sim_running) {
+        vTaskDelayUntil(&last_wake, period);
+        if (!eng->sim_running || eng->paused) {
+            continue;
+        }
         anim_sim_step(eng);
-        steps++;
+        if (eng->frame == 1 || (eng->frame % 120) == 0) {
+            ESP_LOGD(TAG, "anim frame=%d fish=%d", eng->frame, eng->fish_count);
+        }
+        if (!eng->lv_sync_pending) {
+            /* lv_async_call mutates the timer list; must hold LVGL lock (esp. with long PPA flush). */
+            eng->lv_sync_pending = true;
+            if (lvgl_port_lock(50)) {
+                lv_async_call(anim_lv_sync_cb, eng);
+                lvgl_port_unlock();
+            } else {
+                eng->lv_sync_pending = false;
+            }
+        }
     }
-    if (steps == 0) {
-        anim_sim_step(eng);
-        steps = 1;
-    }
-
-    if (eng->frame == 1 || (eng->frame % 120) == 0) {
-        ESP_LOGD(TAG, "anim frame=%d fish=%d steps=%d real=%.0fms", eng->frame, eng->fish_count, steps,
-                 real_dt * 1000.0f);
-    }
-
-    if (!eng->lv_sync_pending) {
-        eng->lv_sync_pending = true;
-        lv_async_call(anim_lv_sync_cb, eng);
-    }
+    eng->sim_task = NULL;
+    vTaskDelete(NULL);
 }
 
 anim_engine_t *anim_engine_create(lv_obj_t *parent)
@@ -1285,20 +1116,6 @@ anim_engine_t *anim_engine_create(lv_obj_t *parent)
     lv_obj_add_flag(eng->bg_img, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(eng->bg_img, LV_OBJ_FLAG_CLICKABLE);
 
-    eng->overlay_vignette = lv_obj_create(eng->root);
-    lv_obj_remove_style_all(eng->overlay_vignette);
-    lv_obj_set_size(eng->overlay_vignette, ANIM_W, eng->view_h);
-    lv_obj_align(eng->overlay_vignette, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_add_flag(eng->overlay_vignette, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(eng->overlay_vignette, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-
-    eng->overlay_water = lv_obj_create(eng->root);
-    lv_obj_remove_style_all(eng->overlay_water);
-    lv_obj_set_size(eng->overlay_water, ANIM_W, eng->view_h);
-    lv_obj_align(eng->overlay_water, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_add_flag(eng->overlay_water, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(eng->overlay_water, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-
     eng->canvas = lv_obj_create(eng->root);
     lv_obj_remove_style_all(eng->canvas);
     lv_obj_set_size(eng->canvas, ANIM_W, eng->view_h);
@@ -1309,7 +1126,6 @@ anim_engine_t *anim_engine_create(lv_obj_t *parent)
     lv_obj_add_event_cb(eng->canvas, anim_canvas_event, LV_EVENT_DRAW_MAIN, eng);
     eng->canvas_buf = NULL;
     init_bubbles(eng);
-    eng->tap_mode = FISH_TAP_FEED;
     return eng;
 }
 
@@ -1324,8 +1140,6 @@ void anim_engine_destroy(anim_engine_t *eng)
         lv_obj_del(eng->root);
         eng->root = NULL;
         eng->bg_img = NULL;
-        eng->overlay_vignette = NULL;
-        eng->overlay_water = NULL;
         eng->canvas = NULL;
     } else if (eng->canvas) {
         lv_obj_del(eng->canvas);
@@ -1353,15 +1167,11 @@ void anim_engine_set_tank(anim_engine_t *eng, fish_tank_state_t *tank)
         eng->interaction = tank->interaction;
         eng->has_interaction = true;
         anim_update_bg_img(eng);
-        anim_update_water_overlay(eng);
-        anim_update_algae_bands(eng);
     } else {
         fish_img_free(&eng->bg_dsc, &eng->bg_buf);
         eng->bg_src_path[0] = '\0';
         eng->has_interaction = false;
         anim_update_bg_img(eng);
-        anim_update_water_overlay(eng);
-        anim_update_algae_bands(eng);
     }
     rebuild_fishes(eng);
     rebuild_decorations(eng);
@@ -1432,15 +1242,6 @@ void anim_engine_set_interaction(anim_engine_t *eng, const fish_interaction_t *i
         if (eng->tank) {
             eng->tank->interaction = *it;
         }
-        anim_update_water_overlay(eng);
-        anim_update_algae_bands(eng);
-    }
-}
-
-void anim_engine_set_tap_mode(anim_engine_t *eng, fish_tap_mode_t mode)
-{
-    if (eng) {
-        eng->tap_mode = mode;
     }
 }
 
@@ -1449,40 +1250,39 @@ void anim_engine_start(anim_engine_t *eng)
     if (!eng) {
         return;
     }
-    if (eng->esp_timer) {
-        esp_timer_stop(eng->esp_timer);
-        esp_timer_delete(eng->esp_timer);
-        eng->esp_timer = NULL;
-    }
-    eng->last_tick_us = 0;
-    eng->sim_accum = 0;
+    anim_engine_stop(eng);
     eng->step_dt = DT;
     eng->lv_sync_pending = false;
-    const esp_timer_create_args_t args = {
-        .callback = anim_esp_timer_cb,
-        .arg = eng,
-        .name = "anim_eng",
-        .dispatch_method = ESP_TIMER_TASK,
-    };
-    if (esp_timer_create(&args, &eng->esp_timer) == ESP_OK) {
-        esp_timer_start_periodic(eng->esp_timer, (uint64_t)ANIM_TIMER_MS * 1000ULL);
+    eng->sim_running = true;
+    if (xTaskCreatePinnedToCore(anim_sim_task, "anim_sim", 8192, eng, 6, &eng->sim_task, 0) != pdPASS) {
+        eng->sim_running = false;
+        eng->sim_task = NULL;
+        ESP_LOGE(TAG, "anim_sim task create failed");
+        return;
     }
-    ESP_LOGI(TAG, "anim started esp_timer=%p fish=%d view_h=%d", (void *)eng->esp_timer, eng->fish_count,
+    ESP_LOGI(TAG, "anim started sim_task=%p fish=%d view_h=%d", (void *)eng->sim_task, eng->fish_count,
              eng->view_h);
 }
 
 void anim_engine_stop(anim_engine_t *eng)
 {
-    if (eng && eng->esp_timer) {
-        esp_timer_stop(eng->esp_timer);
-        esp_timer_delete(eng->esp_timer);
-        eng->esp_timer = NULL;
+    if (!eng) {
+        return;
     }
-    if (eng) {
-        eng->gen++;
-        eng->lv_sync_pending = false;
-        eng->paused = false;
+    eng->sim_running = false;
+    TaskHandle_t task = eng->sim_task;
+    if (task) {
+        for (int i = 0; i < 50 && eng->sim_task != NULL; i++) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (eng->sim_task) {
+            vTaskDelete(eng->sim_task);
+            eng->sim_task = NULL;
+        }
     }
+    eng->gen++;
+    eng->lv_sync_pending = false;
+    eng->paused = false;
 }
 
 void anim_engine_set_paused(anim_engine_t *eng, bool paused)
@@ -1532,23 +1332,16 @@ void anim_engine_trigger_feed(anim_engine_t *eng, int x, int y)
     anim_invalidate_feed(eng);
 }
 
-void anim_engine_trigger_water(anim_engine_t *eng)
+void anim_engine_handle_tap(anim_engine_t *eng, int x, int y)
 {
     if (!eng) {
         return;
     }
-    eng->water.active = true;
-    eng->water.start_ms = now_ms();
-    eng->water.dur_ms = 1200;
-    for (int i = 0; i < eng->fish_count && i < 3; i++) {
-        anim_fish_t *f = &eng->fishes[i];
-        strncpy(f->bubble_text, "谢谢主人!", sizeof(f->bubble_text) - 1);
-        f->bubble_until = (float)(now_ms() + 2000);
-        f->bubble_thanks = true;
-    }
-    if (eng->on_interaction) {
-        eng->on_interaction("water", "virtual", eng->interaction_user);
-    }
+    if (x < 0) x = 0;
+    if (x >= ANIM_W) x = ANIM_W - 1;
+    if (y < 0) y = 0;
+    if (y >= (int)eng->view_h) y = (int)eng->view_h - 1;
+    anim_engine_trigger_feed(eng, x, y);
 }
 
 void anim_engine_screen_tap(anim_engine_t *eng, int screen_x, int screen_y)
@@ -1574,46 +1367,11 @@ void anim_engine_screen_tap(anim_engine_t *eng, int screen_x, int screen_y)
     anim_engine_handle_tap(eng, lx, ly);
 }
 
-void anim_engine_handle_tap(anim_engine_t *eng, int x, int y)
+void anim_engine_set_interaction_cb(anim_engine_t *eng, void (*cb)(const char *, const char *, void *), void *user)
 {
     if (!eng) {
         return;
     }
-    if (x < 0) x = 0;
-    if (x >= ANIM_W) x = ANIM_W - 1;
-    if (y < 0) y = 0;
-    if (y >= (int)eng->view_h) y = (int)eng->view_h - 1;
-    if (eng->tap_mode == FISH_TAP_CLEAN) {
-        const char *region = x < ANIM_W / 3 ? "left" : (x < ANIM_W * 2 / 3 ? "mid" : "right");
-        int lv = 0;
-        if (strcmp(region, "left") == 0) {
-            lv = eng->interaction.algae_left;
-        } else if (strcmp(region, "mid") == 0) {
-            lv = eng->interaction.algae_mid;
-        } else {
-            lv = eng->interaction.algae_right;
-        }
-        if (lv <= 0) {
-            return;
-        }
-        eng->clean.active = true;
-        eng->clean.start_ms = now_ms();
-        eng->clean.dur_ms = 500;
-        strncpy(eng->clean.region, region, sizeof(eng->clean.region) - 1);
-        float third = (float)ANIM_W / 3.0f;
-        eng->clean.x0 = strcmp(region, "left") == 0 ? 0 : (strcmp(region, "mid") == 0 ? third : third * 2);
-        eng->clean.x1 = eng->clean.x0 + third;
-        eng->clean.sweep_dir = randf() > 0.5f ? 1 : -1;
-        if (eng->on_interaction) {
-            eng->on_interaction("clean", region, eng->interaction_user);
-        }
-    } else {
-        anim_engine_trigger_feed(eng, x, y);
-    }
-}
-
-void anim_engine_set_interaction_cb(anim_engine_t *eng, void (*cb)(const char *, const char *, void *), void *user)
-{
     eng->on_interaction = cb;
     eng->interaction_user = user;
 }

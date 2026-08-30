@@ -103,6 +103,7 @@ void fish_display_init(void)
     lvgl_port_cfg.task_priority = 7;
     lvgl_port_cfg.task_max_sleep_ms = 8;
     lvgl_port_cfg.task_stack = 32768;
+    lvgl_port_cfg.task_affinity = 1;
     lvgl_port_init(&lvgl_port_cfg);
 
     const uint32_t lv_hres = lcddev.height;
@@ -128,11 +129,12 @@ void fish_display_init(void)
         const lvgl_port_display_rgb_cfg_t rgb_cfg = {.flags = {.bb_mode = false, .avoid_tearing = false}};
         s_disp = lvgl_port_add_disp_rgb(&rgb_disp_cfg, &rgb_cfg);
     } else {
+        /* Full-screen SPIRAM double buffer + direct_mode: one PPA rotate per frame. */
         const lvgl_port_display_cfg_t disp_cfg = {
             .io_handle = lcddev.lcd_dbi_io,
             .panel_handle = lcddev.lcd_panel_handle,
             .control_handle = NULL,
-            .buffer_size = lv_hres * 160,
+            .buffer_size = lv_hres * lv_vres,
             .double_buffer = true,
             .hres = lv_hres,
             .vres = lv_vres,
@@ -143,9 +145,10 @@ void fish_display_init(void)
                 .buff_spiram = true,
                 .sw_rotate = false,
                 .full_refresh = false,
-                .direct_mode = false,
+                .direct_mode = true,
             },
         };
+        /* avoid_tearing uses portrait panel FBs as LVGL buffers — incompatible with landscape+PPA. */
         const lvgl_port_display_dsi_cfg_t dpi_cfg = {.flags = {.avoid_tearing = false}};
         s_disp = lvgl_port_add_disp_dsi(&disp_cfg, &dpi_cfg);
     }

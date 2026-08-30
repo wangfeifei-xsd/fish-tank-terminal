@@ -4,6 +4,7 @@
 #include "esp_err.h"
 #include "esp_check.h"
 #include "esp_timer.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -36,6 +37,12 @@ typedef struct lvgl_port_ctx_s {
 * 本地变量
 *******************************************************************************/
 static lvgl_port_ctx_t lvgl_port_ctx; /*!< LVGL端口上下文实例 */
+static volatile uint32_t s_fps_frames; /*!< Completed display frames for FPS log */
+
+void lvgl_port_frame_done(void)
+{
+    s_fps_frames++;
+}
 
 /*******************************************************************************
 * 函数定义
@@ -246,6 +253,8 @@ IRAM_ATTR bool lvgl_port_task_notify(uint32_t value)
 static void lvgl_port_task(void *arg)
 {
     uint32_t task_delay_ms = lvgl_port_ctx.task_max_sleep_ms;
+    int64_t fps_last_us = esp_timer_get_time();
+    s_fps_frames = 0;
 
     /* 获取任务互斥锁 */
     if (xSemaphoreTake(lvgl_port_ctx.task_mux, 0) != pdTRUE)
@@ -264,6 +273,14 @@ static void lvgl_port_task(void *arg)
         {
             task_delay_ms = lv_timer_handler();
             lvgl_port_unlock();
+        }
+
+        int64_t now_us = esp_timer_get_time();
+        if (now_us - fps_last_us >= 1000000) {
+            uint32_t frames = s_fps_frames;
+            s_fps_frames = 0;
+            ESP_LOGI(TAG, "FPS: %u", (unsigned)frames);
+            fps_last_us = now_us;
         }
 
         if (task_delay_ms > lvgl_port_ctx.task_max_sleep_ms)

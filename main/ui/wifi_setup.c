@@ -288,7 +288,7 @@ static void do_scan(void)
     s_ws.scan_running = true;
     s_restore_wifi_after_scan = fish_wifi_is_connected();
     set_status("正在扫描 WiFi…");
-    BaseType_t ok = xTaskCreate(scan_task, "wifi_scan", 6144, NULL, 4, NULL);
+    BaseType_t ok = xTaskCreatePinnedToCore(scan_task, "wifi_scan", 6144, NULL, 4, NULL, 0);
     if (ok != pdPASS) {
         s_ws.scan_running = false;
         set_status("扫描任务创建失败");
