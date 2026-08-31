@@ -19,9 +19,9 @@
 #include "resource_cache.h"
 #include "sdkconfig.h"
 #include "anim_engine.h"
+#include "ble/fish_ble.h"
 #include "display_port.h"
 #include "wifi_manager.h"
-#include "wifi_setup.h"
 
 #define FISH_BAR_W      380
 #define FISH_BAR_H      18
@@ -165,9 +165,8 @@ static void enqueue_job(fish_ui_t *ui, fish_job_type_t type, const char *region)
     xQueueSend(s_job_q, &job, 0);
 }
 
-static void btn_refresh_cb(lv_event_t *e)
+static void btn_wifi_refresh(fish_ui_t *ui)
 {
-    fish_ui_t *ui = lv_event_get_user_data(e);
     if (!ui || !ui->cfg) {
         return;
     }
@@ -179,12 +178,22 @@ static void btn_refresh_cb(lv_event_t *e)
         fish_config_save(ui->cfg);
     }
     fish_ui_show_toast(ui, "同步中…");
-    enqueue_job(ui, FISH_JOB_SYNC, NULL);
+    if (ui->refresh_cb) {
+        ui->refresh_cb(ui->refresh_arg);
+    } else {
+        enqueue_job(ui, FISH_JOB_SYNC, NULL);
+    }
 }
 
-static void wifi_resume_cb(void *arg)
+static void close_ble_panel(fish_ui_t *ui)
 {
-    fish_ui_t *ui = arg;
+    if (ui && ui->ble_panel) {
+        lv_obj_add_flag(ui->ble_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void wifi_resume_anim(fish_ui_t *ui)
+{
     if (ui && ui->anim) {
         anim_engine_set_paused(ui->anim, false);
     }
@@ -193,16 +202,129 @@ static void wifi_resume_cb(void *arg)
     }
 }
 
-static void btn_wifi_cb(lv_event_t *e)
+static void on_ble_close(lv_event_t *e)
 {
     fish_ui_t *ui = lv_event_get_user_data(e);
-    if (!ui || !ui->cfg || ui->provisioning) {
+    close_ble_panel(ui);
+    wifi_resume_anim(ui);
+}
+
+void fish_ui_show_ble_provision(fish_ui_t *ui)
+{
+    if (!ui) {
         return;
     }
+    fish_ble_refresh_pin();
+    const char *pin = fish_ble_get_pin();
+    if (pin && pin[0]) {
+        fish_ui_set_pin(ui, pin);
+    }
+    if (ui->ble_panel) {
+        if (ui->lbl_ble_pin) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "PIN: %s", pin ? pin : "------");
+            lv_label_set_text(ui->lbl_ble_pin, buf);
+        }
+        lv_obj_clear_flag(ui->ble_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(ui->ble_panel);
+        return;
+    }
+
+    ui->ble_panel = lv_obj_create(ui->screen);
+    lv_obj_set_size(ui->ble_panel, CONFIG_FISH_LOGICAL_WIDTH - 48, 360);
+    lv_obj_align(ui->ble_panel, LV_ALIGN_CENTER, 0, -40);
+    lv_obj_set_style_bg_color(ui->ble_panel, lv_color_hex(0x1e293b), 0);
+    lv_obj_set_style_border_color(ui->ble_panel, lv_color_hex(0x38bdf8), 0);
+    lv_obj_set_style_border_width(ui->ble_panel, 2, 0);
+    lv_obj_set_style_radius(ui->ble_panel, 12, 0);
+    lv_obj_clear_flag(ui->ble_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *btn_close = lv_btn_create(ui->ble_panel);
+    lv_obj_set_size(btn_close, 44, 44);
+    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, -10, 10);
+    lv_obj_set_style_bg_opa(btn_close, LV_OPA_20, 0);
+    lv_obj_set_style_bg_color(btn_close, lv_color_hex(0x64748b), 0);
+    lv_obj_set_style_border_width(btn_close, 0, 0);
+    lv_obj_set_style_radius(btn_close, 22, 0);
+    lv_obj_set_style_shadow_width(btn_close, 0, 0);
+    lv_obj_t *lb = lv_label_create(btn_close);
+    lv_label_set_text(lb, LV_SYMBOL_CLOSE);
+    lv_obj_set_style_text_color(lb, lv_color_hex(0xe2e8f0), 0);
+    lv_obj_center(lb);
+    lv_obj_add_event_cb(btn_close, on_ble_close, LV_EVENT_CLICKED, ui);
+
+    lv_obj_t *body = lv_obj_create(ui->ble_panel);
+    lv_obj_remove_style_all(body);
+    lv_obj_set_pos(body, 28, 28);
+    lv_obj_set_size(body, CONFIG_FISH_LOGICAL_WIDTH - 48 - 56, 360 - 56);
+    lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(body, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(body, 22, 0);
+
+    lv_obj_t *title = lv_label_create(body);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &fish_font_24, 0);
+    lv_label_set_text(title, "小程序 BLE 配网");
+    lv_obj_set_width(title, LV_PCT(100));
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+
+    lv_obj_t *hint = lv_label_create(body);
+    lv_obj_set_style_text_color(hint, lv_color_hex(0xcbd5e1), 0);
+    lv_label_set_text(hint, "打开海水鱼检疫助手 - BLE配网\n输入 PIN 与 WiFi 后设备将重启");
+    lv_obj_set_width(hint, LV_PCT(100));
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_line_space(hint, 12, 0);
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+
+    ui->lbl_ble_pin = lv_label_create(body);
+    lv_obj_set_style_text_color(ui->lbl_ble_pin, lv_color_hex(0xf8fafc), 0);
+    lv_obj_set_style_text_font(ui->lbl_ble_pin, &fish_font_36, 0);
+    lv_obj_set_style_pad_top(ui->lbl_ble_pin, 10, 0);
+    lv_obj_set_style_pad_bottom(ui->lbl_ble_pin, 6, 0);
+    if (pin && pin[0]) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "PIN: %s", pin);
+        lv_label_set_text(ui->lbl_ble_pin, buf);
+    } else {
+        lv_label_set_text(ui->lbl_ble_pin, "PIN: ------");
+    }
+
+    if (ui->cfg && ui->cfg->device_id[0]) {
+        lv_obj_t *serial = lv_label_create(body);
+        lv_obj_set_style_text_color(serial, lv_color_hex(0x94a3b8), 0);
+        lv_label_set_text_fmt(serial, "设备: %s", ui->cfg->device_id);
+        lv_obj_set_style_pad_bottom(serial, 4, 0);
+    }
+
+    lv_obj_move_foreground(btn_close);
+    lv_obj_move_foreground(ui->ble_panel);
+}
+
+static void btn_wifi_long_cb(lv_event_t *e)
+{
+    fish_ui_t *ui = lv_event_get_user_data(e);
+    if (!ui) {
+        return;
+    }
+    ui->wifi_long_pressed = true;
     if (ui->anim) {
         anim_engine_set_paused(ui->anim, true);
     }
-    fish_wifi_setup_open_from_ui(ui->cfg, ui->screen, wifi_resume_cb, ui);
+    fish_ui_show_ble_provision(ui);
+}
+
+static void btn_wifi_click_cb(lv_event_t *e)
+{
+    fish_ui_t *ui = lv_event_get_user_data(e);
+    if (!ui) {
+        return;
+    }
+    if (ui->wifi_long_pressed) {
+        ui->wifi_long_pressed = false;
+        return;
+    }
+    btn_wifi_refresh(ui);
 }
 
 static void wifi_status_timer_cb(lv_timer_t *t)
@@ -219,6 +341,44 @@ void fish_ui_set_content_ready(fish_ui_t *ui)
     ui->content_ready = true;
     if (ui->loading_panel) {
         lv_obj_add_flag(ui->loading_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void update_tank_header_locked(fish_ui_t *ui, fish_tank_state_t *tank)
+{
+    if (!ui || !tank || !ui->lbl_title) {
+        return;
+    }
+    const char *name = tank->tank.name[0] ? tank->tank.name
+                                          : (ui->cfg && ui->cfg->device_name[0] ? ui->cfg->device_name : "桌面鱼缸");
+    char buf[256];
+    int pos = snprintf(buf, sizeof(buf), "%s", name);
+    const fish_tank_info_t *t = &tank->tank;
+
+    if (t->length_cm > 0 && t->width_cm > 0 && t->height_cm > 0) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos, " - %dx%dx%dcm", t->length_cm, t->width_cm, t->height_cm);
+    } else if (t->length_cm > 0) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos, " - %dcm缸", t->length_cm);
+    }
+    if (t->run_days > 0) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos, " - 运行%d天", t->run_days);
+    }
+    if (tank->fish_count > 0) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos, " - %d条鱼", tank->fish_count);
+    }
+    if (t->total_value > 0) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d元)", t->total_value);
+    }
+    lv_label_set_text(ui->lbl_title, buf);
+
+    if (ui->lbl_nickname) {
+        if (tank->tank.owner_nickname[0]) {
+            lv_label_set_text(ui->lbl_nickname, tank->tank.owner_nickname);
+            lv_obj_clear_flag(ui->lbl_nickname, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_label_set_text(ui->lbl_nickname, "");
+            lv_obj_add_flag(ui->lbl_nickname, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 }
 
@@ -287,25 +447,26 @@ fish_ui_t *fish_ui_create(fish_config_t *cfg, bool provisioning)
     ui->lbl_title = lv_label_create(ui->screen);
     lv_obj_set_style_text_color(ui->lbl_title, lv_color_white(), 0);
     lv_obj_set_style_text_font(ui->lbl_title, &fish_font_24, 0);
-    lv_obj_align(ui->lbl_title, LV_ALIGN_TOP_LEFT, 16, 14);
+    lv_obj_set_width(ui->lbl_title, CONFIG_FISH_LOGICAL_WIDTH - 130);
+    lv_label_set_long_mode(ui->lbl_title, LV_LABEL_LONG_DOT);
+    lv_obj_align(ui->lbl_title, LV_ALIGN_TOP_LEFT, 16, 10);
     lv_label_set_text(ui->lbl_title, cfg->device_name[0] ? cfg->device_name : "桌面鱼缸");
+
+    ui->lbl_nickname = lv_label_create(ui->screen);
+    lv_obj_set_style_text_color(ui->lbl_nickname, lv_color_hex(0xe2e8f0), 0);
+    lv_obj_align(ui->lbl_nickname, LV_ALIGN_TOP_RIGHT, -56, 12);
+    lv_label_set_text(ui->lbl_nickname, "");
+    lv_obj_add_flag(ui->lbl_nickname, LV_OBJ_FLAG_HIDDEN);
 
     ui->btn_wifi = lv_btn_create(ui->screen);
     lv_obj_set_size(ui->btn_wifi, 40, 40);
-    lv_obj_align(ui->btn_wifi, LV_ALIGN_TOP_RIGHT, -56, 8);
+    lv_obj_align(ui->btn_wifi, LV_ALIGN_TOP_RIGHT, -10, 8);
     ui->lbl_wifi = lv_label_create(ui->btn_wifi);
     lv_label_set_text(ui->lbl_wifi, LV_SYMBOL_WIFI);
     lv_obj_center(ui->lbl_wifi);
-    lv_obj_add_event_cb(ui->btn_wifi, btn_wifi_cb, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->btn_wifi, btn_wifi_click_cb, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->btn_wifi, btn_wifi_long_cb, LV_EVENT_LONG_PRESSED, ui);
     fish_ui_update_wifi_status(ui);
-
-    lv_obj_t *btn_refresh = lv_btn_create(ui->screen);
-    lv_obj_set_size(btn_refresh, 40, 40);
-    lv_obj_align(btn_refresh, LV_ALIGN_TOP_RIGHT, -10, 8);
-    lv_obj_t *lbl_r = lv_label_create(btn_refresh);
-    lv_label_set_text(lbl_r, LV_SYMBOL_REFRESH);
-    lv_obj_center(lbl_r);
-    lv_obj_add_event_cb(btn_refresh, btn_refresh_cb, LV_EVENT_CLICKED, ui);
 
     if (provisioning) {
         ui->provision_panel = lv_obj_create(ui->screen);
@@ -317,7 +478,7 @@ fish_ui_t *fish_ui_create(fish_config_t *cfg, bool provisioning)
         lv_obj_set_style_radius(ui->provision_panel, 12, 0);
         lv_obj_t *t1 = lv_label_create(ui->provision_panel);
         lv_obj_set_style_text_color(t1, lv_color_hex(0xcbd5e1), 0);
-        lv_label_set_text(t1, "可用屏上配网或小程序 BLE");
+        lv_label_set_text(t1, "请用小程序 BLE 配网(长按右上角 WiFi 图标)");
         lv_obj_align(t1, LV_ALIGN_TOP_MID, 0, 10);
         ui->lbl_pin = lv_label_create(ui->provision_panel);
         lv_obj_set_style_text_color(ui->lbl_pin, lv_color_hex(0xf8fafc), 0);
@@ -413,8 +574,9 @@ void fish_ui_set_tank(fish_ui_t *ui, fish_tank_state_t *tank)
         return;
     }
     ui->tank = tank;
-    if (ui->lbl_title) {
-        lv_label_set_text(ui->lbl_title, tank->tank.name[0] ? tank->tank.name : ui->cfg->device_name);
+    if (lvgl_port_lock(0)) {
+        update_tank_header_locked(ui, tank);
+        lvgl_port_unlock();
     }
     if (ui->anim) {
         anim_engine_set_tank(ui->anim, tank);
@@ -422,6 +584,20 @@ void fish_ui_set_tank(fish_ui_t *ui, fish_tank_state_t *tank)
     if (ui->bar_satiety) {
         lv_bar_set_value(ui->bar_satiety, tank->interaction.satiety, LV_ANIM_OFF);
     }
+}
+
+void fish_ui_set_refresh_handler(fish_ui_t *ui, fish_ui_refresh_cb_t cb, void *arg)
+{
+    if (!ui) {
+        return;
+    }
+    ui->refresh_cb = cb;
+    ui->refresh_arg = arg;
+}
+
+void fish_ui_request_refresh(fish_ui_t *ui)
+{
+    btn_wifi_refresh(ui);
 }
 
 void fish_ui_set_temp(fish_ui_t *ui, float temp, bool stale)
@@ -437,12 +613,17 @@ void fish_ui_set_temp(fish_ui_t *ui, float temp, bool stale)
 
 void fish_ui_set_pin(fish_ui_t *ui, const char *pin)
 {
-    if (!ui || !ui->lbl_pin || !pin) {
+    if (!ui || !pin) {
         return;
     }
     char buf[32];
     snprintf(buf, sizeof(buf), "PIN: %s", pin);
-    lv_label_set_text(ui->lbl_pin, buf);
+    if (ui->lbl_pin) {
+        lv_label_set_text(ui->lbl_pin, buf);
+    }
+    if (ui->lbl_ble_pin) {
+        lv_label_set_text(ui->lbl_ble_pin, buf);
+    }
 }
 
 void fish_ui_show_toast(fish_ui_t *ui, const char *msg)

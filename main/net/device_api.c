@@ -209,7 +209,8 @@ static void mock_tank_detail(char *resp, size_t len)
 {
     snprintf(resp, len,
              "{\"code\":0,\"data\":{\"tank\":{\"_id\":\"mock_tank_01\",\"name\":\"测试海缸\","
-             "\"length\":120,\"width\":60,\"height\":55,\"imageUrl\":\"\",\"decorations\":[],"
+             "\"length\":120,\"width\":60,\"height\":55,\"totalValue\":12800,\"runDays\":128,"
+             "\"ownerNickName\":\"测试用户\",\"imageUrl\":\"\",\"decorations\":[],"
              "\"interaction\":{\"algaeLevel\":2,\"algaeRegions\":{\"left\":2,\"mid\":1,\"right\":0},"
              "\"satiety\":6,\"waterQuality\":8},\"updatedAt\":\"2026-08-27T10:00:00Z\"},"
              "\"fishList\":[{\"_id\":\"fish_01\",\"name\":\"小丑鱼\",\"iconUrl\":\"\","

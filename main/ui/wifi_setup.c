@@ -305,7 +305,7 @@ static void on_refresh(lv_event_t *e)
 static void on_skip(lv_event_t *e)
 {
     (void)e;
-    set_status("已跳过屏上配网（仍可用 BLE）");
+    set_status("已跳过屏上配网(仍可用 BLE)");
     s_ws.done = true;
     s_ws.success = false;
 }

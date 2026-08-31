@@ -21,7 +21,6 @@
 #include "sdkconfig.h"
 #include "sntp_sync.h"
 #include "wifi_manager.h"
-#include "wifi_setup.h"
 
 static const char *TAG = "fish_main";
 
@@ -312,6 +311,12 @@ static void start_online_services(void)
     }
 }
 
+static void on_ui_refresh(void *arg)
+{
+    (void)arg;
+    sync_tank_from_api();
+}
+
 static void app_task(void *arg)
 {
     (void)arg;
@@ -357,21 +362,19 @@ static void app_task(void *arg)
     fish_ble_set_pin_display_cb(pin_display_cb);
     fish_ble_init(&s_cfg, provisioning);
 
-    if (provisioning) {
-        ESP_LOGI(TAG, "entering on-screen WiFi setup (BLE PIN=%s)", fish_ble_get_pin());
-        fish_wifi_setup_run(&s_cfg);
-        provisioning = !fish_config_has_wifi(&s_cfg);
-    }
-
     if (lvgl_port_lock(0)) {
         s_ui = fish_ui_create(&s_cfg, provisioning);
         lvgl_port_unlock();
+    }
+    if (s_ui) {
+        fish_ui_set_refresh_handler(s_ui, on_ui_refresh, NULL);
     }
     if (provisioning && s_ui) {
         const char *pin = fish_ble_get_pin();
         if (pin && pin[0]) {
             fish_ui_set_pin(s_ui, pin);
         }
+        ESP_LOGI(TAG, "BLE provisioning mode (PIN=%s)", pin ? pin : "?");
     }
 
 #if CONFIG_FISH_MOCK_API

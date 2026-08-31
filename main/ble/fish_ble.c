@@ -385,6 +385,11 @@ const char *fish_ble_get_pin(void)
     return s_pin;
 }
 
+void fish_ble_refresh_pin(void)
+{
+    gen_pin();
+}
+
 bool fish_ble_is_provisioning(void)
 {
     return s_provisioning;

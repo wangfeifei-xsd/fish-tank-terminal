@@ -20,6 +20,51 @@ static const char *SPIFFS_BASE = "/spiffs";
 static const char *META_PATH = "/spiffs/tank_meta.json";
 
 static void parse_tank_state(const char *json, fish_tank_state_t *state, bool local_only);
+
+static const char *json_str_any(cJSON *obj, const char *k1, const char *k2, const char *k3)
+{
+    if (!obj) {
+        return NULL;
+    }
+    const char *keys[] = {k1, k2, k3};
+    for (int i = 0; i < 3; i++) {
+        if (!keys[i]) {
+            break;
+        }
+        cJSON *item = cJSON_GetObjectItem(obj, keys[i]);
+        if (item && cJSON_IsString(item) && item->valuestring[0]) {
+            return item->valuestring;
+        }
+    }
+    return NULL;
+}
+
+static int json_int_any(cJSON *obj, int fallback, const char *k1, const char *k2, const char *k3)
+{
+    if (!obj) {
+        return fallback;
+    }
+    const char *keys[] = {k1, k2, k3};
+    for (int i = 0; i < 3; i++) {
+        if (!keys[i]) {
+            break;
+        }
+        cJSON *item = cJSON_GetObjectItem(obj, keys[i]);
+        if (item && cJSON_IsNumber(item)) {
+            return item->valueint;
+        }
+    }
+    return fallback;
+}
+
+static void copy_str_field(char *dst, size_t dst_len, const char *src)
+{
+    if (!dst || dst_len == 0 || !src) {
+        return;
+    }
+    strncpy(dst, src, dst_len - 1);
+    dst[dst_len - 1] = '\0';
+}
 #define FISH_DECO_BIN_MAX 256
 #define FISH_CACHE_BUDGET_BYTES (3 * 1024 * 1024)
 #define FISH_CACHE_MAX_KEEP 48
@@ -349,7 +394,25 @@ static void parse_tank_state(const char *json, fish_tank_state_t *state, bool lo
             strncpy(state->tank.name, name->valuestring, sizeof(state->tank.name) - 1);
         }
         state->tank.length_cm = cJSON_GetObjectItem(tank, "length") ? cJSON_GetObjectItem(tank, "length")->valueint : 100;
+        state->tank.width_cm = cJSON_GetObjectItem(tank, "width") ? cJSON_GetObjectItem(tank, "width")->valueint : 0;
         state->tank.height_cm = cJSON_GetObjectItem(tank, "height") ? cJSON_GetObjectItem(tank, "height")->valueint : 50;
+        state->tank.total_value = json_int_any(tank, 0, "totalValue", "totalPrice", "fishTotalValue");
+        state->tank.run_days = json_int_any(tank, 0, "runDays", "tankDays", "days");
+        const char *created = json_str_any(tank, "createdAt", "createTime", NULL);
+        if (created) {
+            copy_str_field(state->tank.created_at, sizeof(state->tank.created_at), created);
+        }
+        const char *nick = json_str_any(tank, "ownerNickName", "nickName", "ownerNickname");
+        if (!nick && data) {
+            nick = json_str_any(data, "ownerNickName", "nickName", "userNickName");
+        }
+        if (!nick && data) {
+            cJSON *owner = cJSON_GetObjectItem(data, "owner");
+            nick = json_str_any(owner, "nickName", "nickname", "name");
+        }
+        if (nick) {
+            copy_str_field(state->tank.owner_nickname, sizeof(state->tank.owner_nickname), nick);
+        }
         cJSON *ua = cJSON_GetObjectItem(tank, "updatedAt");
         if (ua && cJSON_IsString(ua)) {
             strncpy(state->tank.updated_at, ua->valuestring, sizeof(state->tank.updated_at) - 1);
@@ -420,6 +483,10 @@ static void parse_tank_state(const char *json, fish_tank_state_t *state, bool lo
                 strncpy(f->updated_at, ua->valuestring, sizeof(f->updated_at) - 1);
             }
             f->size_cm = cJSON_GetObjectItem(item, "size") ? (float)cJSON_GetObjectItem(item, "size")->valuedouble : 10;
+            int fish_days = json_int_any(item, 0, "tankDays", "runDays", "days");
+            if (fish_days > state->tank.run_days) {
+                state->tank.run_days = fish_days;
+            }
             cJSON *layer = cJSON_GetObjectItem(item, "swimLayer");
             if (layer && cJSON_IsString(layer)) {
                 strncpy(f->swim_layer, layer->valuestring, sizeof(f->swim_layer) - 1);

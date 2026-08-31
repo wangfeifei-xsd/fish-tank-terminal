@@ -27,6 +27,10 @@ typedef struct {
     int length_cm;
     int width_cm;
     int height_cm;
+    int total_value;
+    int run_days;
+    char owner_nickname[32];
+    char created_at[32];
     char updated_at[32];
     char image_url[256];
     char bg_path[64];
