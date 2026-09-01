@@ -106,6 +106,7 @@ typedef struct {
     fish_interaction_t interaction;
     fish_tank_state_t *tank;
     float px_per_cm;
+    float sprite_norm;
     int frame;
     float step_dt;
     float sim_time;

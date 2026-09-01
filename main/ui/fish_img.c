@@ -77,6 +77,32 @@ void fish_img_spiffs_to_lv(const char *spiffs_path, char *lv_path, size_t lv_len
     snprintf(lv_path, lv_len, "S:/%s", rel);
 }
 
+void fish_sprite_bin_paths(const char *icon_path, int target_w, char *bin_path, size_t bin_len, char *flip_path,
+                           size_t flip_len)
+{
+    if (!icon_path || target_w <= 0) {
+        if (bin_path && bin_len > 0) {
+            bin_path[0] = '\0';
+        }
+        if (flip_path && flip_len > 0) {
+            flip_path[0] = '\0';
+        }
+        return;
+    }
+    size_t pn = strlen(icon_path);
+    const char *ext = strrchr(icon_path, '.');
+    size_t base_len = pn;
+    if (ext && ext > icon_path) {
+        base_len = (size_t)(ext - icon_path);
+    }
+    if (bin_path && bin_len > 0) {
+        snprintf(bin_path, bin_len, "%.*s_%dw.bin", (int)base_len, icon_path, target_w);
+    }
+    if (flip_path && flip_len > 0) {
+        snprintf(flip_path, flip_len, "%.*s_%dwr.bin", (int)base_len, icon_path, target_w);
+    }
+}
+
 static void remove_path(const char *path)
 {
     if (path && path[0]) {
@@ -416,7 +442,11 @@ esp_err_t fish_img_load_sprite_fit_width(const char *png_path, const char *bin_p
         return ESP_ERR_INVALID_ARG;
     }
     if (bin_path && bin_path[0] && fish_img_load_bin(bin_path, dsc, buf_out) == ESP_OK) {
-        return ESP_OK;
+        int cached_w = (int)dsc->header.w;
+        if (abs(cached_w - target_w) <= 2) {
+            return ESP_OK;
+        }
+        fish_img_free(dsc, buf_out);
     }
     uint8_t *rgba = NULL;
     unsigned sw = 0;

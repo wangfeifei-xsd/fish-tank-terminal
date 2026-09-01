@@ -242,6 +242,35 @@ static void free_sprite_preload(anim_engine_t *eng)
     eng->sprite_preload_count = 0;
 }
 
+static esp_err_t load_fish_sprite_pair(const fish_item_t *src, int target_w, lv_img_dsc_t *dsc, uint8_t **buf,
+                                       lv_img_dsc_t *flip_dsc, uint8_t **flip_buf)
+{
+    if (!src || target_w <= 0 || !dsc || !buf) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const char *png = src->icon_path[0] ? src->icon_path : src->icon_bin_path;
+    if (!png || !png[0]) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    char bin_path[72];
+    char flip_path[72];
+    fish_sprite_bin_paths(png, target_w, bin_path, sizeof(bin_path), flip_path, sizeof(flip_path));
+    esp_err_t err = fish_img_load_sprite_fit_width(png, bin_path, target_w, dsc, buf, false);
+    if (err != ESP_OK && src->icon_bin_path[0]) {
+        err = fish_img_load_sprite_fit_width(png, src->icon_bin_path, target_w, dsc, buf, false);
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (flip_dsc && flip_buf) {
+        if (fish_img_load_sprite_fit_width(png, flip_path, target_w, flip_dsc, flip_buf, true) != ESP_OK &&
+            src->icon_path_flip[0]) {
+            fish_img_load_sprite_fit_width(png, src->icon_path_flip, target_w, flip_dsc, flip_buf, true);
+        }
+    }
+    return ESP_OK;
+}
+
 static void preload_fish_sprites(anim_engine_t *eng, fish_tank_state_t *tank)
 {
     if (!eng || !tank) {
@@ -255,6 +284,15 @@ static void preload_fish_sprites(anim_engine_t *eng, fish_tank_state_t *tank)
     eng->sprite_preload_count = n;
     float tank_len = tank->tank.length_cm > 0 ? (float)tank->tank.length_cm : 100.0f;
     float px_per_cm = (float)ANIM_W / tank_len;
+    float max_fish_px = 0.0f;
+    for (int i = 0; i < n; i++) {
+        float px = fish_size_raw_px(tank->fish[i].size_cm, px_per_cm);
+        if (px > max_fish_px) {
+            max_fish_px = px;
+        }
+    }
+    float sprite_norm = fish_sprite_norm_from_max(max_fish_px);
+    eng->sprite_norm = sprite_norm;
     for (int i = 0; i < n; i++) {
         anim_sprite_preload_t *p = &eng->sprite_preload[i];
         memset(p, 0, sizeof(*p));
@@ -268,14 +306,12 @@ static void preload_fish_sprites(anim_engine_t *eng, fish_tank_state_t *tank)
         if (!have_png && !have_bin) {
             continue;
         }
-        int tw = fish_sprite_target_px(src->size_cm * px_per_cm);
-        const char *png = src->icon_path[0] ? src->icon_path : src->icon_bin_path;
-        if (fish_img_load_sprite_fit_width(png, src->icon_bin_path, tw, &p->dsc, &p->buf, false) == ESP_OK) {
+        int tw = fish_size_to_sprite_px(src->size_cm, px_per_cm, sprite_norm);
+        if (load_fish_sprite_pair(src, tw, &p->dsc, &p->buf, &p->flip_dsc, &p->flip_buf) == ESP_OK) {
             p->ready = true;
         } else {
-            ESP_LOGW(TAG, "preload sprite failed %s", png);
+            ESP_LOGW(TAG, "preload sprite failed %s (w=%d)", src->icon_path[0] ? src->icon_path : src->icon_bin_path, tw);
         }
-        fish_img_load_sprite_fit_width(png, src->icon_path_flip, tw, &p->flip_dsc, &p->flip_buf, true);
     }
     int ready = 0;
     for (int i = 0; i < n; i++) {
@@ -303,6 +339,14 @@ static void rebuild_fishes(anim_engine_t *eng)
     float H = (float)eng->view_h;
     float tank_len = eng->tank->tank.length_cm > 0 ? (float)eng->tank->tank.length_cm : 100.0f;
     eng->px_per_cm = W / tank_len;
+    float max_fish_px = 0.0f;
+    for (int i = 0; i < n; i++) {
+        float px = fish_size_raw_px(eng->tank->fish[i].size_cm, eng->px_per_cm);
+        if (px > max_fish_px) {
+            max_fish_px = px;
+        }
+    }
+    eng->sprite_norm = fish_sprite_norm_from_max(max_fish_px);
     float layer_top = H * 0.12f;
     float layer_bottom = H * 0.85f;
     float layer_h = layer_bottom - layer_top;
@@ -330,12 +374,9 @@ static void rebuild_fishes(anim_engine_t *eng)
         f->amp = (3.0f + randf() * 5.0f) * amp_mul;
         f->freq = 1.0f + randf() * 1.0f;
         f->phase = randf() * 6.283f;
-        f->size = src->size_cm * eng->px_per_cm;
+        f->size = fish_size_raw_px(src->size_cm, eng->px_per_cm) * eng->sprite_norm;
         if (f->size < 4) {
             f->size = 4;
-        }
-        if (f->size > FISH_SPRITE_WIDTH) {
-            f->size = FISH_SPRITE_WIDTH;
         }
         float rt = layer_top, rb = layer_bottom;
         if (strcmp(src->swim_layer, "middle_top") == 0) {
@@ -364,7 +405,7 @@ static void rebuild_fishes(anim_engine_t *eng)
         memset(&f->sprite_flip_dsc, 0, sizeof(f->sprite_flip_dsc));
         f->sprite_buf = NULL;
         f->sprite_flip_buf = NULL;
-        int target_w = fish_sprite_target_px(f->size);
+        int target_w = fish_size_to_sprite_px(src->size_cm, eng->px_per_cm, eng->sprite_norm);
         if (i < eng->sprite_preload_count && eng->sprite_preload[i].ready &&
             (int)eng->sprite_preload[i].dsc.header.w == target_w) {
             anim_sprite_preload_t *p = &eng->sprite_preload[i];
@@ -381,13 +422,10 @@ static void rebuild_fishes(anim_engine_t *eng)
             bool have_asset = (src->icon_bin_path[0] && stat(src->icon_bin_path, &st) == 0 && st.st_size > 0) ||
                               (src->icon_path[0] && stat(src->icon_path, &st) == 0 && st.st_size > 0);
             if (have_asset) {
-                const char *png = src->icon_path[0] ? src->icon_path : src->icon_bin_path;
-                if (fish_img_load_sprite_fit_width(png, src->icon_bin_path, target_w, &f->sprite_dsc, &f->sprite_buf,
-                                                   false) == ESP_OK) {
+                if (load_fish_sprite_pair(src, target_w, &f->sprite_dsc, &f->sprite_buf, &f->sprite_flip_dsc,
+                                          &f->sprite_flip_buf) == ESP_OK) {
                     f->has_sprite = true;
                 }
-                fish_img_load_sprite_fit_width(png, src->icon_path_flip, target_w, &f->sprite_flip_dsc,
-                                               &f->sprite_flip_buf, true);
             }
         }
         f->prev_x = f->x;
@@ -1096,6 +1134,7 @@ anim_engine_t *anim_engine_create(lv_obj_t *parent)
     }
     eng->gen = 1;
     eng->step_dt = DT;
+    eng->sprite_norm = 1.0f;
     eng->view_h = (lv_coord_t)ANIM_VIEW_H;
     if (eng->view_h < 200) {
         eng->view_h = 200;

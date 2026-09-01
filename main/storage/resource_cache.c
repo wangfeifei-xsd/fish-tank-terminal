@@ -1,6 +1,7 @@
 #include "resource_cache.h"
 
 #include <dirent.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -482,7 +483,17 @@ static void parse_tank_state(const char *json, fish_tank_state_t *state, bool lo
             if (ua && cJSON_IsString(ua)) {
                 strncpy(f->updated_at, ua->valuestring, sizeof(f->updated_at) - 1);
             }
-            f->size_cm = cJSON_GetObjectItem(item, "size") ? (float)cJSON_GetObjectItem(item, "size")->valuedouble : 10;
+            {
+                cJSON *size = cJSON_GetObjectItem(item, "size");
+                if (size && cJSON_IsNumber(size)) {
+                    f->size_cm = (float)size->valuedouble;
+                } else {
+                    f->size_cm = FISH_REF_SIZE_CM;
+                }
+                if (f->size_cm <= 0.0f) {
+                    f->size_cm = FISH_REF_SIZE_CM;
+                }
+            }
             int fish_days = json_int_any(item, 0, "tankDays", "runDays", "days");
             if (fish_days > state->tank.run_days) {
                 state->tank.run_days = fish_days;
@@ -550,7 +561,13 @@ bool fish_cache_needs_update(const fish_tank_state_t *state, const char *new_jso
                 cJSON *ua_fish = cJSON_GetObjectItem(item, "updatedAt");
                 const char *id_s = id && cJSON_IsString(id) ? id->valuestring : "";
                 const char *ua_s = ua_fish && cJSON_IsString(ua_fish) ? ua_fish->valuestring : "";
-                if (strcmp(state->fish[i].id, id_s) != 0 || strcmp(state->fish[i].updated_at, ua_s) != 0) {
+                float new_size = FISH_REF_SIZE_CM;
+                cJSON *size = cJSON_GetObjectItem(item, "size");
+                if (size && cJSON_IsNumber(size) && size->valuedouble > 0.0) {
+                    new_size = (float)size->valuedouble;
+                }
+                if (strcmp(state->fish[i].id, id_s) != 0 || strcmp(state->fish[i].updated_at, ua_s) != 0 ||
+                    fabsf(state->fish[i].size_cm - new_size) > 0.05f) {
                     changed = true;
                     break;
                 }
@@ -707,17 +724,32 @@ esp_err_t fish_cache_prepare_fish_sprite(const fish_item_t *fish, int target_w)
     struct stat st;
     bool have_png = stat(fish->icon_path, &st) == 0 && st.st_size > 0;
     if (!have_png && !fish_wifi_is_connected()) {
+        ESP_LOGW(TAG, "fish sprite offline miss %s", fish->icon_path);
         return ESP_ERR_NOT_FOUND;
     }
     if (fish->icon_url[0] && fish_wifi_is_connected()) {
         fish_img_download_if_needed(fish->icon_url, fish->icon_path);
+        have_png = stat(fish->icon_path, &st) == 0 && st.st_size > 0;
     }
-    esp_err_t err = fish_img_prepare_rgba565a8_fit_width(fish->icon_path, fish->icon_bin_path, target_w, false);
+    if (!have_png) {
+        ESP_LOGW(TAG, "fish sprite no png %s", fish->icon_path);
+        return ESP_ERR_NOT_FOUND;
+    }
+    char bin_path[72];
+    char flip_path[72];
+    fish_sprite_bin_paths(fish->icon_path, target_w, bin_path, sizeof(bin_path), flip_path, sizeof(flip_path));
+    esp_err_t err = fish_img_prepare_rgba565a8_fit_width(fish->icon_path, bin_path, target_w, false);
+    if (err != ESP_OK && fish->icon_bin_path[0]) {
+        err = fish_img_prepare_rgba565a8_fit_width(fish->icon_path, fish->icon_bin_path, target_w, false);
+    }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "sprite bin failed %s (%s)", fish->icon_path, esp_err_to_name(err));
         return err;
     }
-    err = fish_img_prepare_rgba565a8_fit_width(fish->icon_path, fish->icon_path_flip, target_w, true);
+    err = fish_img_prepare_rgba565a8_fit_width(fish->icon_path, flip_path, target_w, true);
+    if (err != ESP_OK && fish->icon_path_flip[0]) {
+        err = fish_img_prepare_rgba565a8_fit_width(fish->icon_path, fish->icon_path_flip, target_w, true);
+    }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "sprite flip bin failed %s (%s)", fish->icon_path, esp_err_to_name(err));
     }
@@ -789,13 +821,21 @@ void fish_cache_prepare_assets(fish_tank_state_t *state, int canvas_w, int canva
     }
     float tank_len = state->tank.length_cm > 0 ? (float)state->tank.length_cm : 100.0f;
     float px_per_cm = (float)canvas_w / tank_len;
+    float max_fish_px = 0.0f;
+    for (int i = 0; i < state->fish_count; i++) {
+        float px = fish_size_raw_px(state->fish[i].size_cm, px_per_cm);
+        if (px > max_fish_px) {
+            max_fish_px = px;
+        }
+    }
+    float sprite_norm = fish_sprite_norm_from_max(max_fish_px);
     int fish_ready = 0;
     for (int i = 0; i < state->fish_count; i++) {
         fish_item_t *fish = &state->fish[i];
         if (!fish->icon_url[0] && !fish->icon_path[0]) {
             continue;
         }
-        int sprite_px = fish_sprite_target_px(fish->size_cm * px_per_cm);
+        int sprite_px = fish_size_to_sprite_px(fish->size_cm, px_per_cm, sprite_norm);
         size_t need = (size_t)sprite_px * (size_t)sprite_px * 3 * 2;
         if (need > budget) {
             ESP_LOGW(TAG, "skip fish sprite %d, need %u budget %u", i, (unsigned)need, (unsigned)budget);

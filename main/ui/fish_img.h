@@ -11,9 +11,31 @@
 extern "C" {
 #endif
 
-/** Max cached fish sprite width; actual size follows on-screen fish size (up to this cap). */
-#define FISH_SPRITE_WIDTH 96
+/** Reference fish length (cm); display scales proportionally, e.g. 15cm is 50% larger than 10cm. */
+#define FISH_REF_SIZE_CM 10.0f
+/** Max cached fish sprite width; tank-level normalization keeps relative sizes under this cap. */
+#define FISH_SPRITE_WIDTH 256
 #define FISH_SPRITE_MIN_WIDTH 16
+
+static inline float fish_size_raw_px(float size_cm, float px_per_cm)
+{
+    if (size_cm <= 0.0f) {
+        size_cm = FISH_REF_SIZE_CM;
+    }
+    if (px_per_cm <= 0.0f) {
+        return FISH_REF_SIZE_CM;
+    }
+    return size_cm * px_per_cm;
+}
+
+/** Scale down all fish together when the largest would exceed FISH_SPRITE_WIDTH. */
+static inline float fish_sprite_norm_from_max(float max_fish_px)
+{
+    if (max_fish_px <= 0.0f || max_fish_px <= (float)FISH_SPRITE_WIDTH) {
+        return 1.0f;
+    }
+    return (float)FISH_SPRITE_WIDTH / max_fish_px;
+}
 
 static inline int fish_sprite_target_px(float size_px)
 {
@@ -26,6 +48,15 @@ static inline int fish_sprite_target_px(float size_px)
     }
     return w;
 }
+
+static inline int fish_size_to_sprite_px(float size_cm, float px_per_cm, float norm)
+{
+    return fish_sprite_target_px(fish_size_raw_px(size_cm, px_per_cm) * norm);
+}
+
+/** Sized sprite bin paths: {icon_base}_{w}w.bin and {icon_base}_{w}wr.bin */
+void fish_sprite_bin_paths(const char *icon_path, int target_w, char *bin_path, size_t bin_len, char *flip_path,
+                           size_t flip_len);
 
 uint32_t fish_img_crc32(const char *data, size_t len);
 
