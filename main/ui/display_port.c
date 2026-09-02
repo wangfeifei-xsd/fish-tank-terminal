@@ -17,11 +17,6 @@ static fish_tank_tap_fn s_tank_tap_fn;
 static void *s_tank_tap_user;
 static bool s_touch_was_down;
 
-static void boot_bar_anim_exec(void *bar, int32_t v)
-{
-    lv_bar_set_value(bar, v, LV_ANIM_OFF);
-}
-
 typedef struct {
     fish_tank_tap_fn fn;
     void *user;
@@ -199,33 +194,28 @@ void fish_display_init(void)
         lv_obj_set_style_bg_color(s_boot_scr, lv_color_hex(0x0f172a), 0);
         lv_obj_set_style_bg_opa(s_boot_scr, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(s_boot_scr, 0, 0);
-        lv_obj_t *boot_lbl = lv_label_create(s_boot_scr);
+        lv_obj_t *boot_box = lv_obj_create(s_boot_scr);
+        lv_obj_set_size(boot_box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(boot_box, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(boot_box, 0, 0);
+        lv_obj_set_style_pad_all(boot_box, 0, 0);
+        lv_obj_clear_flag(boot_box, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(boot_box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(boot_box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_row(boot_box, 24, 0);
+        lv_obj_center(boot_box);
+
+        lv_obj_t *boot_lbl = lv_label_create(boot_box);
         lv_obj_set_style_text_color(boot_lbl, lv_color_hex(0xe2e8f0), 0);
         lv_obj_set_style_text_font(boot_lbl, &fish_font_36, 0);
         lv_label_set_text(boot_lbl, "加载中");
-        lv_obj_align(boot_lbl, LV_ALIGN_CENTER, 0, -28);
 
-        lv_obj_t *boot_bar = lv_bar_create(s_boot_scr);
-        lv_obj_set_size(boot_bar, 360, 14);
-        lv_obj_align(boot_bar, LV_ALIGN_CENTER, 0, 28);
-        lv_obj_set_style_bg_color(boot_bar, lv_color_hex(0x334155), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(boot_bar, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_radius(boot_bar, 7, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(boot_bar, lv_color_hex(0x38bdf8), LV_PART_INDICATOR);
-        lv_obj_set_style_bg_opa(boot_bar, LV_OPA_COVER, LV_PART_INDICATOR);
-        lv_obj_set_style_radius(boot_bar, 7, LV_PART_INDICATOR);
-        lv_bar_set_range(boot_bar, 0, 100);
-        lv_bar_set_value(boot_bar, 12, LV_ANIM_OFF);
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, boot_bar);
-        lv_anim_set_values(&a, 12, 88);
-        lv_anim_set_time(&a, 1000);
-        lv_anim_set_playback_time(&a, 1000);
-        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-        lv_anim_set_exec_cb(&a, boot_bar_anim_exec);
-        lv_anim_start(&a);
+        lv_obj_t *boot_spinner = lv_spinner_create(boot_box, 1200, 60);
+        lv_obj_set_size(boot_spinner, 48, 48);
+        lv_obj_set_style_arc_color(boot_spinner, lv_color_hex(0x334155), LV_PART_MAIN);
+        lv_obj_set_style_arc_color(boot_spinner, lv_color_hex(0x38bdf8), LV_PART_INDICATOR);
+        lv_obj_set_style_arc_width(boot_spinner, 6, LV_PART_MAIN);
+        lv_obj_set_style_arc_width(boot_spinner, 6, LV_PART_INDICATOR);
 
         lv_scr_load(s_boot_scr);
         lvgl_port_unlock();

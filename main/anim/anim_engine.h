@@ -26,7 +26,7 @@ extern "C" {
 typedef struct {
     float x, y, base_y, target_base_y;
     float prev_x, prev_y;
-    float size, vx, amp, freq, phase, tilt;
+    float size, vx, swim_vx, swim_angle, wander_t, amp, freq, phase, tilt;
     float range_top, range_bottom;
     int dir, facing;
     bool turning;

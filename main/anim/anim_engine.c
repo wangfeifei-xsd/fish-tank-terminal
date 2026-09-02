@@ -373,6 +373,12 @@ static void rebuild_fishes(anim_engine_t *eng)
             f->pause_prob = 0.0006f;
         }
         f->vx = (56.0f + randf() * 80.0f) * speed_mul;
+        f->swim_vx = f->vx * 0.68f;
+        {
+            float angle_base = randf() > 0.5f ? 0.0f : (float)M_PI;
+            f->swim_angle = angle_base + (randf() - 0.5f) * 1.0f;
+        }
+        f->wander_t = randf() * 2.0f;
         f->amp = (3.0f + randf() * 5.0f) * amp_mul;
         f->freq = 1.0f + randf() * 1.0f;
         f->phase = randf() * 6.283f;
@@ -784,11 +790,6 @@ static void draw_fish_sprite(anim_engine_t *eng, lv_draw_ctx_t *ctx, anim_fish_t
     draw_bubble_text(eng, ctx, f);
 }
 
-static float clamp_base_y(const anim_fish_t *f, float y)
-{
-    return fmaxf(f->range_top, fminf(f->range_bottom, y));
-}
-
 static bool particle_alive(const anim_engine_t *eng, const anim_particle_t *p)
 {
     if (!p || p->eaten) {
@@ -917,7 +918,6 @@ static void update_fish(anim_engine_t *eng, anim_fish_t *f, int fi, float t)
 {
     const float dt = DT;
     const float W = (float)ANIM_W;
-    const float H = (float)eng->view_h;
     const float now = (float)now_ms();
     const bool feeding = eng->feed_active;
 
@@ -948,26 +948,48 @@ static void update_fish(anim_engine_t *eng, anim_fish_t *f, int fi, float t)
             if (randf() < f->pause_prob) {
                 f->pause_until = now + 500 + randf() * 1800;
             } else {
-                f->x += (float)f->dir * f->vx * dt;
+                float spd = f->swim_vx * dt;
+                f->x += cosf(f->swim_angle) * spd;
+                f->base_y += sinf(f->swim_angle) * spd;
+                f->target_base_y = f->base_y;
+
+                f->wander_t += dt;
+                if (f->wander_t > 2.0f + randf() * 3.0f) {
+                    f->wander_t = 0;
+                    f->swim_angle += (randf() - 0.5f) * 1.2f;
+                }
+
+                int hdir = cosf(f->swim_angle) >= 0.0f ? 1 : -1;
+                if (hdir != f->dir) {
+                    f->dir = hdir;
+                    f->facing = -hdir;
+                }
             }
             float margin = f->size / 2 + 4;
-            if ((f->x <= margin && f->dir == -1) || (f->x >= W - margin && f->dir == 1)) {
-                if (f->x <= margin && f->dir == -1) {
-                    f->x = margin;
-                } else {
-                    f->x = W - margin;
-                }
+            bool hit_x_wall = false;
+            if (f->x <= margin) {
+                f->x = margin;
+                f->swim_angle = (float)M_PI - f->swim_angle;
+                hit_x_wall = true;
+            } else if (f->x >= W - margin) {
+                f->x = W - margin;
+                f->swim_angle = (float)M_PI - f->swim_angle;
+                hit_x_wall = true;
+            }
+            if (f->base_y <= f->range_top) {
+                f->base_y = f->range_top;
+                f->swim_angle = -f->swim_angle;
+            } else if (f->base_y >= f->range_bottom) {
+                f->base_y = f->range_bottom;
+                f->swim_angle = -f->swim_angle;
+            }
+            f->target_base_y = f->base_y;
+            if (hit_x_wall && !f->turning) {
                 f->turning = true;
                 f->turn_t = 0;
                 f->turn_duration = 0.22f + randf() * 0.12f;
                 f->turn_sign = randf() > 0.5f ? 1 : -1;
-                f->target_base_y = clamp_base_y(f, f->base_y + (randf() - 0.5f) * H * 0.1f);
             }
-        }
-        if (fabsf(f->base_y - f->target_base_y) >= 0.5f) {
-            f->base_y += (f->target_base_y - f->base_y) * 0.08f;
-        } else {
-            f->base_y = f->target_base_y;
         }
     }
 

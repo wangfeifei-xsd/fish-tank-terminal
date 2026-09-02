@@ -30,10 +30,10 @@ typedef struct {
     lv_obj_t *toast_lbl;
     lv_obj_t *loading_panel;
     lv_obj_t *loading_lbl;
-    lv_obj_t *loading_bar;
+    lv_obj_t *loading_spinner;
     lv_obj_t *update_panel;
     lv_obj_t *update_lbl;
-    lv_obj_t *update_bar;
+    lv_obj_t *update_spinner;
     lv_timer_t *toast_timer;
     lv_timer_t *wifi_timer;
     fish_ui_refresh_cb_t refresh_cb;

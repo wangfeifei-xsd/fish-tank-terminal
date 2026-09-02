@@ -230,52 +230,49 @@ static bool enqueue_job(fish_ui_t *ui, fish_job_type_t type, const char *region)
     return true;
 }
 
-static void loading_bar_anim_exec(void *bar, int32_t v)
+static lv_obj_t *make_loading_spinner(lv_obj_t *parent)
 {
-    lv_bar_set_value(bar, v, LV_ANIM_OFF);
+    lv_obj_t *spinner = lv_spinner_create(parent, 1200, 60);
+    lv_obj_set_size(spinner, 48, 48);
+    lv_obj_set_style_arc_color(spinner, lv_color_hex(0x334155), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(spinner, lv_color_hex(0x38bdf8), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(spinner, 6, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(spinner, 6, LV_PART_INDICATOR);
+    return spinner;
 }
 
-static void loading_bar_start(lv_obj_t *bar)
+static void style_loading_stack_box(lv_obj_t *box)
 {
-    if (!bar) {
-        return;
+    lv_obj_set_size(box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(box, 0, 0);
+    lv_obj_set_style_pad_all(box, 0, 0);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(box, 24, 0);
+}
+
+static lv_obj_t *create_loading_stack(lv_obj_t *parent, const char *text, lv_obj_t **lbl_out,
+                                      lv_obj_t **spinner_out)
+{
+    lv_obj_t *box = lv_obj_create(parent);
+    style_loading_stack_box(box);
+    lv_obj_center(box);
+
+    lv_obj_t *lbl = lv_label_create(box);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0xe2e8f0), 0);
+    lv_obj_set_style_text_font(lbl, &fish_font_36, 0);
+    lv_label_set_text(lbl, text);
+
+    lv_obj_t *spinner = make_loading_spinner(box);
+    if (lbl_out) {
+        *lbl_out = lbl;
     }
-    lv_anim_del(bar, loading_bar_anim_exec);
-    lv_bar_set_range(bar, 0, 100);
-    lv_bar_set_value(bar, 12, LV_ANIM_OFF);
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, bar);
-    lv_anim_set_values(&a, 12, 88);
-    lv_anim_set_time(&a, 1000);
-    lv_anim_set_playback_time(&a, 1000);
-    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-    lv_anim_set_exec_cb(&a, loading_bar_anim_exec);
-    lv_anim_start(&a);
-}
-
-static void loading_bar_stop(lv_obj_t *bar)
-{
-    if (!bar) {
-        return;
+    if (spinner_out) {
+        *spinner_out = spinner;
     }
-    lv_anim_del(bar, loading_bar_anim_exec);
-}
-
-static lv_obj_t *make_loading_bar(lv_obj_t *parent, lv_coord_t w)
-{
-    lv_obj_t *bar = lv_bar_create(parent);
-    lv_obj_set_size(bar, w, 14);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(0x334155), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(bar, 7, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(0x38bdf8), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(bar, 7, LV_PART_INDICATOR);
-    lv_bar_set_range(bar, 0, 100);
-    lv_bar_set_value(bar, 12, LV_ANIM_OFF);
-    return bar;
+    return box;
 }
 
 static void btn_wifi_refresh(fish_ui_t *ui)
@@ -459,7 +456,6 @@ void fish_ui_set_content_ready(fish_ui_t *ui)
         }
     }
     if (ui->loading_panel) {
-        loading_bar_stop(ui->loading_bar);
         lv_obj_add_flag(ui->loading_panel, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -664,15 +660,7 @@ fish_ui_t *fish_ui_create(fish_config_t *cfg, bool provisioning)
         lv_obj_set_style_radius(ui->loading_panel, 0, 0);
         lv_obj_clear_flag(ui->loading_panel, LV_OBJ_FLAG_SCROLLABLE);
 
-        ui->loading_lbl = lv_label_create(ui->loading_panel);
-        lv_obj_set_style_text_color(ui->loading_lbl, lv_color_hex(0xe2e8f0), 0);
-        lv_obj_set_style_text_font(ui->loading_lbl, &fish_font_36, 0);
-        lv_label_set_text(ui->loading_lbl, "加载中");
-        lv_obj_align(ui->loading_lbl, LV_ALIGN_CENTER, 0, -28);
-
-        ui->loading_bar = make_loading_bar(ui->loading_panel, 360);
-        lv_obj_align(ui->loading_bar, LV_ALIGN_CENTER, 0, 28);
-        loading_bar_start(ui->loading_bar);
+        create_loading_stack(ui->loading_panel, "加载中", &ui->loading_lbl, &ui->loading_spinner);
         lv_obj_move_foreground(ui->loading_panel);
     }
 
@@ -697,8 +685,6 @@ void fish_ui_destroy(fish_ui_t *ui)
         lv_timer_del(ui->wifi_timer);
         ui->wifi_timer = NULL;
     }
-    loading_bar_stop(ui->loading_bar);
-    loading_bar_stop(ui->update_bar);
     if (ui->anim) {
         anim_engine_stop(ui->anim);
         anim_engine_destroy(ui->anim);
@@ -796,7 +782,7 @@ void fish_ui_show_update_loading(fish_ui_t *ui, const char *msg)
         lv_obj_add_flag(ui->update_panel, LV_OBJ_FLAG_CLICKABLE);
 
         lv_obj_t *card = lv_obj_create(ui->update_panel);
-        lv_obj_set_size(card, 520, 180);
+        lv_obj_set_size(card, 480, LV_SIZE_CONTENT);
         lv_obj_center(card);
         lv_obj_set_style_bg_color(card, lv_color_hex(0x1e293b), 0);
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
@@ -804,19 +790,22 @@ void fish_ui_show_update_loading(fish_ui_t *ui, const char *msg)
         lv_obj_set_style_border_width(card, 2, 0);
         lv_obj_set_style_radius(card, 16, 0);
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        style_loading_stack_box(card);
+        lv_obj_set_style_pad_ver(card, 32, 0);
+        lv_obj_set_style_pad_hor(card, 24, 0);
 
         ui->update_lbl = lv_label_create(card);
+        lv_obj_set_width(ui->update_lbl, 432);
         lv_obj_set_style_text_color(ui->update_lbl, lv_color_hex(0xf8fafc), 0);
         lv_obj_set_style_text_font(ui->update_lbl, &fish_font_36, 0);
-        lv_obj_align(ui->update_lbl, LV_ALIGN_TOP_MID, 0, 36);
+        lv_obj_set_style_text_align(ui->update_lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(ui->update_lbl, LV_LABEL_LONG_WRAP);
 
-        ui->update_bar = make_loading_bar(card, 360);
-        lv_obj_align(ui->update_bar, LV_ALIGN_BOTTOM_MID, 0, -36);
+        ui->update_spinner = make_loading_spinner(card);
     }
     if (ui->update_lbl) {
         lv_label_set_text(ui->update_lbl, msg && msg[0] ? msg : "页面更新加载中");
     }
-    loading_bar_start(ui->update_bar);
     lv_obj_clear_flag(ui->update_panel, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(ui->update_panel);
 }
@@ -826,7 +815,6 @@ void fish_ui_hide_update_loading(fish_ui_t *ui)
     if (!ui || !ui->update_panel) {
         return;
     }
-    loading_bar_stop(ui->update_bar);
     lv_obj_add_flag(ui->update_panel, LV_OBJ_FLAG_HIDDEN);
 }
 
