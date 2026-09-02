@@ -133,6 +133,27 @@ static void on_wifi_json(const char *json)
     if (pass && cJSON_IsString(pass)) {
         strncpy(s_cfg.wifi_pass, pass->valuestring, sizeof(s_cfg.wifi_pass) - 1);
     }
+
+    cJSON *bind_tok = cJSON_GetObjectItem(doc, "bindToken");
+    if (bind_tok && cJSON_IsString(bind_tok) && bind_tok->valuestring) {
+        const char *tok = bind_tok->valuestring;
+        size_t tok_len = strlen(tok);
+        bool hex_ok = (tok_len == 32);
+        for (size_t i = 0; hex_ok && i < tok_len; i++) {
+            char c = tok[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                hex_ok = false;
+            }
+        }
+        if (hex_ok) {
+            strncpy(s_cfg.bind_token, tok, sizeof(s_cfg.bind_token) - 1);
+            s_cfg.bind_token[sizeof(s_cfg.bind_token) - 1] = '\0';
+            ESP_LOGI(TAG, "bindToken saved");
+        } else {
+            ESP_LOGW(TAG, "bindToken ignored (expect 32 hex chars)");
+        }
+    }
+
     s_cfg.provisioned = true;
     fish_config_save(&s_cfg);
     ble_notify_wifi("{\"status\":\"OK\",\"msg\":\"WiFi saved, restarting...\"}");

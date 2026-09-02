@@ -15,6 +15,7 @@ extern "C" {
 #define FISH_WIFI_SSID_LEN 33
 #define FISH_WIFI_PASS_LEN 65
 #define FISH_KEY_LEN      64
+#define FISH_BIND_TOKEN_LEN 33
 
 typedef struct {
     char wifi_ssid[FISH_WIFI_SSID_LEN];
@@ -24,6 +25,7 @@ typedef struct {
     char tank_id[FISH_TANK_ID_LEN];
     char app_key[FISH_KEY_LEN];
     char app_secret[FISH_KEY_LEN];
+    char bind_token[FISH_BIND_TOKEN_LEN];
     float temp_high;
     float temp_low;
     bool provisioned;

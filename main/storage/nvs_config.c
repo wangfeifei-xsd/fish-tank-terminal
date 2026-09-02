@@ -73,6 +73,8 @@ esp_err_t fish_config_load(fish_config_t *cfg)
     if (nvs_get_str(h, "app_secret", cfg->app_secret, &sz) != ESP_OK) {
         strncpy(cfg->app_secret, CONFIG_FISH_APP_SECRET, sizeof(cfg->app_secret) - 1);
     }
+    sz = sizeof(cfg->bind_token);
+    nvs_get_str(h, "bind_token", cfg->bind_token, &sz);
     nvs_get_u8(h, "provisioned", (uint8_t *)&cfg->provisioned);
     size_t blob = sizeof(float);
     if (nvs_get_blob(h, "temp_high", &cfg->temp_high, &blob) != ESP_OK) {
@@ -112,6 +114,7 @@ esp_err_t fish_config_save(const fish_config_t *cfg)
     nvs_set_str(h, "tank_id", cfg->tank_id);
     nvs_set_str(h, "app_key", cfg->app_key);
     nvs_set_str(h, "app_secret", cfg->app_secret);
+    nvs_set_str(h, "bind_token", cfg->bind_token);
     nvs_set_u8(h, "provisioned", cfg->provisioned ? 1 : 0);
     nvs_set_blob(h, "temp_high", &cfg->temp_high, sizeof(float));
     nvs_set_blob(h, "temp_low", &cfg->temp_low, sizeof(float));

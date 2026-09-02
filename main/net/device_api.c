@@ -502,6 +502,36 @@ esp_err_t fish_api_bind(const char *device_id, const char *device_name)
 #endif
 }
 
+esp_err_t fish_api_device_report(const char *device_id, const char *bind_token)
+{
+    if (!device_id || !device_id[0] || !bind_token || !bind_token[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char body[160];
+    snprintf(body, sizeof(body), "{\"deviceId\":\"%s\",\"bindToken\":\"%s\"}", device_id, bind_token);
+#if CONFIG_FISH_MOCK_API
+    (void)body;
+    return ESP_OK;
+#else
+    char resp[256];
+    int code = 0;
+    esp_err_t err = signed_request("POST", "/api/device/report", "/api/device/report", body, resp, sizeof(resp), &code);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "device/report OK: %s", resp[0] ? resp : "(empty)");
+        cJSON *root = cJSON_Parse(resp);
+        if (root) {
+            cJSON *biz = cJSON_GetObjectItem(root, "code");
+            if (biz && cJSON_IsNumber(biz) && biz->valueint != 0 && biz->valueint != 200) {
+                ESP_LOGW(TAG, "device/report biz code=%d", biz->valueint);
+                err = ESP_FAIL;
+            }
+            cJSON_Delete(root);
+        }
+    }
+    return err;
+#endif
+}
+
 esp_err_t fish_api_download_url(const char *url, const char *dest_path)
 {
     if (!url || !url[0] || !dest_path) {

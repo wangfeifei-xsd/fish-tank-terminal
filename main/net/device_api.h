@@ -67,6 +67,7 @@ esp_err_t fish_api_tank_detail(const char *tank_id, char *json_out, size_t out_l
 esp_err_t fish_api_feed(const char *tank_id, fish_interaction_t *out);
 esp_err_t fish_api_temp_latest(fish_temp_info_t *out);
 esp_err_t fish_api_bind(const char *device_id, const char *device_name);
+esp_err_t fish_api_device_report(const char *device_id, const char *bind_token);
 esp_err_t fish_api_deco_list(char *json_out, size_t out_len);
 
 esp_err_t fish_api_parse_interaction(const char *json, fish_interaction_t *out);

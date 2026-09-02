@@ -301,6 +301,20 @@ static void poll_task(void *arg)
 
 static void run_api_sync_phase(void)
 {
+    if (s_cfg.bind_token[0]) {
+        ESP_LOGI(TAG, "online_services: device/report (bindToken)");
+        log_heap("before device report");
+        esp_err_t report_err = fish_api_device_report(s_cfg.device_id, s_cfg.bind_token);
+        if (report_err == ESP_OK) {
+            ESP_LOGI(TAG, "online_services: device/report OK");
+            s_cfg.bind_token[0] = '\0';
+            fish_config_save(&s_cfg);
+        } else {
+            ESP_LOGW(TAG, "online_services: device/report failed %s (will retry next boot)",
+                     esp_err_to_name(report_err));
+        }
+    }
+
     ESP_LOGI(TAG, "online_services: API bind");
     log_heap("before bind");
     esp_err_t bind_err = fish_api_bind(s_cfg.device_id, s_cfg.device_name);
