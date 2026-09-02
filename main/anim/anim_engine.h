@@ -51,9 +51,13 @@ typedef struct {
     uint8_t *sprite_flip_buf;
     bool has_sprite;
     lv_obj_t *img;
+    lv_obj_t *say; /* 跟随鱼的对话框 */
     const lv_img_dsc_t *cached_src;
     lv_coord_t cached_x;
     lv_coord_t cached_y;
+    int16_t cached_angle;
+    lv_coord_t cached_say_x;
+    lv_coord_t cached_say_y;
 } anim_fish_t;
 
 typedef struct {

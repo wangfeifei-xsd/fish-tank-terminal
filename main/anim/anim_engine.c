@@ -129,7 +129,14 @@ static void sync_deco_widgets(anim_engine_t *eng)
 
 static void destroy_fish_widget(anim_fish_t *f)
 {
-    if (f && f->img) {
+    if (!f) {
+        return;
+    }
+    if (f->say) {
+        lv_obj_del(f->say);
+        f->say = NULL;
+    }
+    if (f->img) {
         lv_obj_del(f->img);
         f->img = NULL;
     }
@@ -147,6 +154,36 @@ static void teardown_fish_widgets(anim_engine_t *eng)
     }
 }
 
+static void create_fish_say(anim_engine_t *eng, anim_fish_t *f)
+{
+    if (!eng || !f || !eng->root) {
+        return;
+    }
+    if (f->say) {
+        lv_obj_del(f->say);
+        f->say = NULL;
+    }
+    f->say = lv_label_create(eng->root);
+    lv_obj_clear_flag(f->say, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(f->say, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(f->say, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(f->say, LV_OPA_70, 0);
+    lv_obj_set_style_radius(f->say, 8, 0);
+    lv_obj_set_style_pad_left(f->say, 8, 0);
+    lv_obj_set_style_pad_right(f->say, 8, 0);
+    lv_obj_set_style_pad_top(f->say, 4, 0);
+    lv_obj_set_style_pad_bottom(f->say, 4, 0);
+    lv_obj_set_style_border_width(f->say, 1, 0);
+    lv_obj_set_style_border_color(f->say, lv_color_hex(0xe2e8f0), 0);
+    lv_obj_set_style_border_opa(f->say, LV_OPA_80, 0);
+    lv_obj_set_style_text_font(f->say, &fish_font_24, 0);
+    lv_obj_set_style_text_color(f->say, lv_color_hex(0x334155), 0);
+    lv_label_set_text(f->say, "");
+    lv_obj_add_flag(f->say, LV_OBJ_FLAG_HIDDEN);
+    f->cached_say_x = (lv_coord_t)INT16_MIN;
+    f->cached_say_y = (lv_coord_t)INT16_MIN;
+}
+
 static void create_fish_widget(anim_engine_t *eng, anim_fish_t *f)
 {
     if (!eng || !f || !eng->root || !f->has_sprite || !f->sprite_dsc.data) {
@@ -156,14 +193,64 @@ static void create_fish_widget(anim_engine_t *eng, anim_fish_t *f)
     f->cached_src = NULL;
     f->cached_x = (lv_coord_t)INT16_MIN;
     f->cached_y = (lv_coord_t)INT16_MIN;
+    f->cached_angle = INT16_MIN;
     f->img = lv_img_create(eng->root);
     lv_obj_clear_flag(f->img, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_img_set_src(f->img, &f->sprite_dsc);
     lv_img_set_zoom(f->img, 256);
     lv_img_set_angle(f->img, 0);
+    create_fish_say(eng, f);
     if (eng->canvas) {
         lv_obj_move_foreground(eng->canvas);
     }
+}
+
+static void sync_fish_say(anim_engine_t *eng, anim_fish_t *f, float fish_top_y)
+{
+    if (!eng || !f || !f->say) {
+        return;
+    }
+    int64_t now = now_ms();
+    if (!f->bubble_text[0] || now > (int64_t)f->bubble_until) {
+        if (!lv_obj_has_flag(f->say, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(f->say, LV_OBJ_FLAG_HIDDEN);
+        }
+        return;
+    }
+
+    const char *cur = lv_label_get_text(f->say);
+    if (!cur || strcmp(cur, f->bubble_text) != 0) {
+        lv_label_set_text(f->say, f->bubble_text);
+        uint32_t text_col = f->bubble_feed ? (f->bubble_color ? f->bubble_color : 0xf97316u) : 0x334155u;
+        lv_obj_set_style_text_color(f->say, lv_color_hex(text_col), 0);
+        lv_obj_update_layout(f->say);
+    }
+
+    lv_coord_t bw = lv_obj_get_width(f->say);
+    lv_coord_t bh = lv_obj_get_height(f->say);
+    if (bw < 8) {
+        bw = 8;
+    }
+    lv_coord_t sx = (lv_coord_t)(f->x - (float)bw * 0.5f);
+    lv_coord_t sy = (lv_coord_t)(fish_top_y - (float)bh - 3.0f);
+    if (sx < 2) {
+        sx = 2;
+    }
+    if (sx + bw > (lv_coord_t)ANIM_W - 2) {
+        sx = (lv_coord_t)ANIM_W - 2 - bw;
+    }
+    if (sy < 2) {
+        sy = 2;
+    }
+    if (lv_obj_has_flag(f->say, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_clear_flag(f->say, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (sx != f->cached_say_x || sy != f->cached_say_y) {
+        lv_obj_set_pos(f->say, sx, sy);
+        f->cached_say_x = sx;
+        f->cached_say_y = sy;
+    }
+    lv_obj_move_foreground(f->say);
 }
 
 static void sync_fish_widget(anim_engine_t *eng, anim_fish_t *f)
@@ -217,6 +304,25 @@ static void sync_fish_widget(anim_engine_t *eng, anim_fish_t *f)
         f->cached_x = nx;
         f->cached_y = ny;
     }
+
+    /* 啄食点头：整体向下约 12° 再回正。
+     * facing>0 原图头朝左 → 逆时针；facing<0 镜像头朝右 → 顺时针。 */
+    float nod_deg = 0.0f;
+    if (f->peck > 0.0f) {
+        nod_deg = sinf(f->peck * (float)M_PI) * 12.0f;
+    }
+    float angle_deg = f->tilt + nod_deg;
+    int16_t angle = (int16_t)(angle_deg * 10.0f);
+    if (draw_facing >= 0) {
+        angle = (int16_t)(-angle);
+    }
+    if (angle != f->cached_angle) {
+        lv_img_set_pivot(f->img, (lv_coord_t)(iw / 2), (lv_coord_t)(ih / 2));
+        lv_img_set_angle(f->img, angle);
+        f->cached_angle = angle;
+    }
+
+    sync_fish_say(eng, f, f->y - zh * 0.5f);
 }
 
 static void sync_fish_widgets(anim_engine_t *eng)
@@ -632,10 +738,34 @@ static void draw_bubble_text(anim_engine_t *eng, lv_draw_ctx_t *ctx, anim_fish_t
     lv_draw_label(ctx, &dsc, &coords, f->bubble_text, NULL);
 }
 
+static int count_active_say(const anim_engine_t *eng)
+{
+    if (!eng) {
+        return 0;
+    }
+    int64_t now = now_ms();
+    int n = 0;
+    for (int i = 0; i < eng->fish_count; i++) {
+        const anim_fish_t *f = &eng->fishes[i];
+        if (f->bubble_text[0] && now <= (int64_t)f->bubble_until) {
+            n++;
+        }
+    }
+    return n;
+}
+
 static void update_status_bubble(anim_engine_t *eng, anim_fish_t *f)
 {
     const fish_interaction_t *it = &eng->interaction;
     int64_t now = now_ms();
+    if (now > (int64_t)f->bubble_until) {
+        if (f->bubble_feed || f->bubble_thanks || f->bubble_text[0]) {
+            f->bubble_feed = false;
+            f->bubble_thanks = false;
+            f->bubble_text[0] = '\0';
+            f->bubble_level = 0;
+        }
+    }
     if (f->bubble_thanks || f->bubble_feed) {
         return;
     }
@@ -646,13 +776,35 @@ static void update_status_bubble(anim_engine_t *eng, anim_fish_t *f)
     if (now < (int64_t)f->bubble_until || now < (int64_t)f->bubble_cooldown) {
         return;
     }
-    float rate = sev_h == 2 ? 0.05f : 0.015f;
+    /* 同时最多 1 条在说话，且大幅降低触发率，避免话痨 */
+    if (count_active_say(eng) >= 1) {
+        return;
+    }
+    float rate = sev_h == 2 ? 0.004f : 0.001f;
     if (randf() > rate) {
         return;
     }
     strncpy(f->bubble_text, it->satiety <= 1 ? "求投喂!" : "有点饿了…", sizeof(f->bubble_text) - 1);
-    f->bubble_until = (float)(now + 1200 + rand() % 1800);
-    f->bubble_cooldown = (float)(now + (sev_h == 2 ? 2500 : 3500) + rand() % 3500);
+    f->bubble_text[sizeof(f->bubble_text) - 1] = '\0';
+    f->bubble_until = (float)(now + 1200 + rand() % 1000);
+    f->bubble_cooldown = (float)(now + (sev_h == 2 ? 8000 : 12000) + rand() % 6000);
+    f->bubble_color = 0x334155;
+}
+
+static void trigger_feed_bubble(anim_engine_t *eng, anim_fish_t *f)
+{
+    if (!eng || !f) {
+        return;
+    }
+    static const char *lines[] = {"真香", "再来一颗", "谢谢义父", "哧溜溜", "OwO"};
+    int n = (int)(sizeof(lines) / sizeof(lines[0]));
+    strncpy(f->bubble_text, lines[rand() % n], sizeof(f->bubble_text) - 1);
+    f->bubble_text[sizeof(f->bubble_text) - 1] = '\0';
+    f->bubble_until = (float)(now_ms() + 1200 + (int)(randf() * 600.0f));
+    f->bubble_cooldown = (float)(now_ms() + 4000 + (int)(randf() * 2000.0f));
+    f->bubble_color = 0xf97316;
+    f->bubble_feed = true;
+    f->bubble_level = 1;
 }
 
 static void draw_fish_sprite(anim_engine_t *eng, lv_draw_ctx_t *ctx, anim_fish_t *f)
@@ -777,19 +929,6 @@ static bool particle_alive(const anim_engine_t *eng, const anim_particle_t *p)
     return false;
 }
 
-static void trigger_feed_bubble(anim_fish_t *f)
-{
-    static const char *lines[] = {"好吃！", "好香！", "谢谢主人！", "再来一颗！", "yummy～", "满足～"};
-    int n = (int)(sizeof(lines) / sizeof(lines[0]));
-    strncpy(f->bubble_text, lines[rand() % n], sizeof(f->bubble_text) - 1);
-    f->bubble_text[sizeof(f->bubble_text) - 1] = '\0';
-    f->bubble_until = (float)(now_ms() + 1200 + (int)(randf() * 600.0f));
-    f->bubble_cooldown = (float)(now_ms() + 4000 + (int)(randf() * 2000.0f));
-    f->bubble_color = 0xf97316;
-    f->bubble_feed = true;
-    f->bubble_level = 1;
-}
-
 static bool update_seeking(anim_engine_t *eng, anim_fish_t *f, int fi, float dt)
 {
     float W = (float)ANIM_W;
@@ -883,7 +1022,7 @@ static bool update_seeking(anim_engine_t *eng, anim_fish_t *f, int fi, float dt)
         f->seek = NULL;
         f->fed_this_round = true;
         f->pause_until = 0;
-        trigger_feed_bubble(f);
+        trigger_feed_bubble(eng, f);
     }
     return true;
 }
