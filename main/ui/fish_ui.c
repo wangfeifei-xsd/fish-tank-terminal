@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "device_api.h"
+#include "fish_heap.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -128,12 +129,8 @@ static void api_worker_task(void *arg)
                 strncpy(res->toast, "时间未同步，稍后再试", sizeof(res->toast) - 1);
                 break;
             }
-            /* SDIO RX asserts when DMA/internal is fragmented during TLS. */
-            if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) < 8192 ||
-                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) < 20480) {
-                ESP_LOGW("fish_ui", "feed skipped: low internal heap (dma=%u int=%u)",
-                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
-                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+            if (!fish_heap_sdio_safe()) {
+                fish_heap_log_unsafe("fish_ui");
                 strncpy(res->toast, "内存紧张，稍后再试", sizeof(res->toast) - 1);
                 break;
             }
@@ -525,6 +522,9 @@ static void interaction_cb(const char *action, const char *region, void *user)
         }
         /* Match anim API cooldown — avoid stacking HTTPS while SDIO is busy. */
         if (s_last_feed_job_ms > 0 && (now - s_last_feed_job_ms) < 10000) {
+            return;
+        }
+        if (!fish_heap_sdio_safe()) {
             return;
         }
         s_last_feed_job_ms = now;

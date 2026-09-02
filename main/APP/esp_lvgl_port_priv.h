@@ -34,6 +34,9 @@ bool lvgl_port_task_notify(uint32_t value);
 /** Count one completed display frame (called from flush on last push). */
 void lvgl_port_frame_done(void);
 
+/** Accumulate display flush time (msync + swap + vsync wait) in microseconds. */
+void lvgl_port_flush_time_add(int64_t us);
+
 #ifdef __cplusplus
 }
 #endif

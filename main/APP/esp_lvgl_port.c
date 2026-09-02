@@ -38,10 +38,19 @@ typedef struct lvgl_port_ctx_s {
 *******************************************************************************/
 static lvgl_port_ctx_t lvgl_port_ctx; /*!< LVGL端口上下文实例 */
 static volatile uint32_t s_fps_frames; /*!< Completed display frames for FPS log */
+static volatile uint32_t s_fps_render_us; /*!< LVGL handler time accumulated per second */
+static volatile uint32_t s_fps_flush_us; /*!< Flush pipeline time accumulated per second */
 
 void lvgl_port_frame_done(void)
 {
     s_fps_frames++;
+}
+
+void lvgl_port_flush_time_add(int64_t us)
+{
+    if (us > 0) {
+        s_fps_flush_us += (uint32_t)us;
+    }
 }
 
 /*******************************************************************************
@@ -271,15 +280,25 @@ static void lvgl_port_task(void *arg)
     {
         if (lvgl_port_lock(0))
         {
+            int64_t t0 = esp_timer_get_time();
             task_delay_ms = lv_timer_handler();
+            int64_t dt = esp_timer_get_time() - t0;
+            if (dt > 0) {
+                s_fps_render_us += (uint32_t)dt;
+            }
             lvgl_port_unlock();
         }
 
         int64_t now_us = esp_timer_get_time();
         if (now_us - fps_last_us >= 1000000) {
             uint32_t frames = s_fps_frames;
+            uint32_t render_us = s_fps_render_us;
+            uint32_t flush_us = s_fps_flush_us;
             s_fps_frames = 0;
-            ESP_LOGI(TAG, "FPS: %u", (unsigned)frames);
+            s_fps_render_us = 0;
+            s_fps_flush_us = 0;
+            ESP_LOGI(TAG, "FPS: %u render=%ums flush=%ums",
+                     (unsigned)frames, (unsigned)(render_us / 1000U), (unsigned)(flush_us / 1000U));
             fps_last_us = now_us;
         }
 

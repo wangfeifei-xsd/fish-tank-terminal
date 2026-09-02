@@ -15,6 +15,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "fish_heap.h"
 #include "fish_ui.h"
 #include "lvgl.h"
 #include "nvs_config.h"
@@ -191,6 +192,11 @@ static void sync_tank_from_api(void)
     }
 
     log_heap("before tank sync");
+    if (!fish_heap_sdio_safe()) {
+        fish_heap_log_unsafe(TAG);
+        free(detail_json);
+        return;
+    }
     if (fish_api_tank_detail(s_cfg.tank_id, detail_json, FISH_API_RESP_MAX) == ESP_OK) {
         bool empty_ui = !s_tank_shown || s_tank.fish_count == 0;
         bool need_meta = fish_cache_needs_update(&s_tank, detail_json) || empty_ui;
@@ -260,6 +266,10 @@ static void poll_task(void *arg)
         }
 
         if (fish_ui_http_job_busy()) {
+            continue;
+        }
+        if (!fish_heap_sdio_safe()) {
+            fish_heap_log_unsafe(TAG);
             continue;
         }
 

@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_check.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_lcd_panel_io.h"
@@ -183,26 +184,30 @@ lv_display_t *lvgl_port_add_disp_dsi(const lvgl_port_display_cfg_t *disp_cfg, co
         }
         disp_ctx->panel_fb_bytes = lvgl_port_cache_align((size_t)disp_ctx->panel_w * disp_ctx->panel_h * sizeof(uint16_t));
         /* PPA writes DPI back FB directly (zero-copy swap via draw_bitmap of FB ptr). */
-        if (esp_lcd_dpi_panel_get_frame_buffer(disp_ctx->panel_handle, 2,
-                                               &disp_ctx->panel_fb[0], &disp_ctx->panel_fb[1]) != ESP_OK ||
-            !disp_ctx->panel_fb[0] || !disp_ctx->panel_fb[1]) {
-            ESP_LOGE(TAG, "DPI frame buffers unavailable for PPA");
-            disp_ctx->ppa_rotate = false;
-            disp_ctx->panel_fb[0] = NULL;
-            disp_ctx->panel_fb[1] = NULL;
-        } else {
-            /* After lcd_clear: fb0 on screen, next write target is 1. */
-            disp_ctx->fb_back = 1;
-            ppa_client_config_t ppa_cfg = {
-                .oper_type = PPA_OPERATION_SRM,
-                .max_pending_trans_num = 1,
-            };
-            if (ppa_register_client(&ppa_cfg, &disp_ctx->ppa_handle) != ESP_OK) {
-                ESP_LOGE(TAG, "ppa_register_client failed");
+        if (disp_ctx->ppa_rotate) {
+            if (esp_lcd_dpi_panel_get_frame_buffer(disp_ctx->panel_handle, 2,
+                                                   &disp_ctx->panel_fb[0], &disp_ctx->panel_fb[1]) != ESP_OK ||
+                !disp_ctx->panel_fb[0] || !disp_ctx->panel_fb[1]) {
+                ESP_LOGE(TAG, "DPI frame buffers unavailable for PPA");
+                disp_ctx->ppa_rotate = false;
                 disp_ctx->panel_fb[0] = NULL;
                 disp_ctx->panel_fb[1] = NULL;
-                disp_ctx->ppa_rotate = false;
+            } else {
+                /* After lcd_clear: fb0 on screen, next write target is 1. */
+                disp_ctx->fb_back = 1;
+                ppa_client_config_t ppa_cfg = {
+                    .oper_type = PPA_OPERATION_SRM,
+                    .max_pending_trans_num = 1,
+                };
+                if (ppa_register_client(&ppa_cfg, &disp_ctx->ppa_handle) != ESP_OK) {
+                    ESP_LOGE(TAG, "ppa_register_client failed");
+                    disp_ctx->panel_fb[0] = NULL;
+                    disp_ctx->panel_fb[1] = NULL;
+                    disp_ctx->ppa_rotate = false;
+                }
             }
+        } else if (dsi_cfg->flags.native_landscape) {
+            ESP_LOGI(TAG, "7\" landscape: PPA rotate disabled, direct DPI flush");
         }
         if (disp_ctx->ppa_rotate && disp_ctx->trans_sem == NULL) {
             disp_ctx->trans_sem = xSemaphoreCreateCounting(1, 0);
@@ -877,12 +882,14 @@ static void lvgl_port_flush_callback(lv_disp_drv_t *drv, const lv_area_t *area, 
                     const uint32_t hres = (uint32_t)drv->hor_res;
                     const uint32_t vres = (uint32_t)drv->ver_res;
                     void *fb = (drv->draw_buf && drv->draw_buf->buf_act) ? drv->draw_buf->buf_act : color_map;
+                    int64_t flush_t0 = esp_timer_get_time();
                     lvgl_port_flush_draw_cache(fb, (size_t)hres * vres * sizeof(lv_color_t));
                     esp_lcd_panel_draw_bitmap(disp_ctx->panel_handle, 0, 0, (int)hres, (int)vres, fb);
                     if (disp_ctx->trans_sem) {
                         xSemaphoreTake(disp_ctx->trans_sem, 0);
                         xSemaphoreTake(disp_ctx->trans_sem, portMAX_DELAY);
                     }
+                    lvgl_port_flush_time_add(esp_timer_get_time() - flush_t0);
                 }
                 lvgl_port_frame_done();
             }

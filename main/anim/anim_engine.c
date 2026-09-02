@@ -15,6 +15,7 @@
 #include "fish_img.h"
 #include "fonts/fish_font_24.h"
 #include "lvgl.h"
+#include "fish_heap.h"
 #include "resource_cache.h"
 
 static const char *TAG = "anim_engine";
@@ -448,7 +449,6 @@ static void rebuild_fishes(anim_engine_t *eng)
 }
 
 static void init_bubble_widgets(anim_engine_t *eng);
-static void sync_bubble_widgets(anim_engine_t *eng);
 static void anim_sim_step(anim_engine_t *eng);
 
 static void init_bubbles(anim_engine_t *eng)
@@ -611,35 +611,9 @@ static void anim_update_bg_img(anim_engine_t *eng)
     } else {
         lv_obj_add_flag(eng->bg_img, LV_OBJ_FLAG_HIDDEN);
         if (eng->root) {
-            /* Match screen chrome — avoid sky-blue flash when bg not ready. */
             lv_obj_set_style_bg_color(eng->root, lv_color_hex(0x0f172a), 0);
             lv_obj_set_style_bg_opa(eng->root, LV_OPA_COVER, 0);
         }
-    }
-}
-
-static void draw_decorations(anim_engine_t *eng, lv_draw_ctx_t *ctx)
-{
-    float W = (float)ANIM_W;
-    float H = (float)eng->view_h;
-    for (int i = 0; i < eng->deco_count; i++) {
-        anim_deco_t *ad = &eng->decos[i];
-        if (!ad->loaded || !ad->dsc.data) {
-            continue;
-        }
-        float cx = ad->x * W;
-        float cy = ad->y * H;
-        float half_w = (float)ad->w / 2.0f;
-        float half_h = (float)ad->h / 2.0f;
-        lv_draw_img_dsc_t img_dsc;
-        lv_draw_img_dsc_init(&img_dsc);
-        lv_area_t a = {
-            ax(eng, cx - half_w),
-            ay(eng, cy - half_h),
-            ax(eng, cx + half_w),
-            ay(eng, cy + half_h),
-        };
-        lv_draw_img(ctx, &img_dsc, &a, &ad->dsc);
     }
 }
 
@@ -1137,7 +1111,6 @@ static void anim_sim_task(void *arg)
             ESP_LOGD(TAG, "anim frame=%d fish=%d", eng->frame, eng->fish_count);
         }
         if (!eng->lv_sync_pending) {
-            /* lv_async_call mutates the timer list; must hold LVGL lock (esp. with long PPA flush). */
             eng->lv_sync_pending = true;
             if (lvgl_port_lock(50)) {
                 lv_async_call(anim_lv_sync_cb, eng);
@@ -1375,7 +1348,11 @@ void anim_engine_trigger_feed(anim_engine_t *eng, int x, int y)
     }
     const int64_t now_ms = esp_timer_get_time() / 1000;
     /* HTTPS/SDIO cannot absorb back-to-back feeds; keep animation but skip API. */
-    const bool allow_api = (now_ms >= eng->feed_api_cool_until_ms);
+    bool allow_api = (now_ms >= eng->feed_api_cool_until_ms);
+    if (allow_api && !fish_heap_sdio_safe()) {
+        fish_heap_log_unsafe(TAG);
+        allow_api = false;
+    }
     ESP_LOGI(TAG, "feed trigger (%d,%d) api=%d", x, y, allow_api ? 1 : 0);
     eng->feed_active = true;
     float spawn_y = (float)y + FEED_SPAWN_DROP;
