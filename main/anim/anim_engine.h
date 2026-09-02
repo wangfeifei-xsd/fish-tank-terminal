@@ -103,6 +103,7 @@ typedef struct {
     anim_particle_t particles[ANIM_MAX_PARTICLES];
     anim_hand_t hand;
     bool feed_active;
+    int64_t feed_api_cool_until_ms;
     fish_interaction_t interaction;
     fish_tank_state_t *tank;
     float px_per_cm;

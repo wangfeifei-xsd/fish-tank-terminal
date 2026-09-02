@@ -299,7 +299,7 @@ static const mipi_lcd_init_cmd_t st7703_init_cmds[] = {
 
 #define ST7703_INIT_CMD_LEN (sizeof(st7703_init_cmds) / sizeof(mipi_lcd_init_cmd_t))
 
-/* 7寸1024x600 EK79007初始化序列 */
+/* 7寸1024x600 EK79007初始化序列（含 2-lane 0xB2；0x11 后由 panelinit 延时 120ms） */
 static const mipi_lcd_init_cmd_t ek79007_init_cmds[] = {
     {0x80, (uint8_t[]){0x8B}, 1},
     {0x81, (uint8_t[]){0x78}, 1},
@@ -310,6 +310,8 @@ static const mipi_lcd_init_cmd_t ek79007_init_cmds[] = {
     {0x86, (uint8_t[]){0x88}, 1},
     {0xB1, (uint8_t[]){0x04}, 1},
     {0xB2, (uint8_t[]){0x10}, 1},
+    {0x11, (uint8_t[]){0x00}, 0},
+    {0x29, (uint8_t[]){0x00}, 0},
 };
 
 #define EK79007_INIT_CMD_LEN (sizeof(ek79007_init_cmds) / sizeof(mipi_lcd_init_cmd_t))

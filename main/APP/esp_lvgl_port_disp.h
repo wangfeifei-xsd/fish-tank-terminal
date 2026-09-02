@@ -75,6 +75,7 @@ typedef struct {
 typedef struct {
     struct {
         unsigned int avoid_tearing: 1;  /* 如果为真，使用内部MIPI-DSI缓冲区作为LVGL绘制缓冲区以避免撕裂效果 */
+        unsigned int native_landscape: 1; /* 物理横屏面板：LVGL 分辨率与面板一致，不做 PPA 旋转 */
     } flags;
 } lvgl_port_display_dsi_cfg_t;
 

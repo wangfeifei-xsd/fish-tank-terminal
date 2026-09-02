@@ -187,7 +187,11 @@ static esp_err_t mipi_lcd_panelinit(esp_lcd_panel_t *panel)
 			else if (mipidev.id == 0x7796)   
             {
                 vTaskDelay(pdMS_TO_TICKS(200));
-            } 
+            }
+            else if (mipidev.id == 0x79007)
+            {
+                vTaskDelay(pdMS_TO_TICKS(120));
+            }
         }
         else if (init_cmds[i].cmd == 0x29)  
         {
@@ -204,6 +208,10 @@ static esp_err_t mipi_lcd_panelinit(esp_lcd_panel_t *panel)
 			else if (mipidev.id == 0x7796)   /* ST7796U的0x29命令后可能不需要特殊延时 */
             {
                 vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            else if (mipidev.id == 0x79007)
+            {
+                vTaskDelay(pdMS_TO_TICKS(20));
             }
         }
 		else if (init_cmds[i].cmd == 0xFF && mipidev.id == 0x7703)
@@ -224,8 +232,8 @@ static esp_err_t mipi_lcd_panelinit(esp_lcd_panel_t *panel)
         }
     }
 
-    /* 只有不是ST7796U时才执行镜像设置 */
-    if (mipidev.id != 0x7796)
+    /* ST7796U / EK79007 使用厂商 init_cmds，不支持通用 MADCTL/COLMOD */
+    if (mipidev.id != 0x7796 && mipidev.id != 0x79007)
 	{
 		/* 根据MIPI屏放置位置调整显示方向 */
 		if (mirror_x)
@@ -369,7 +377,12 @@ static esp_err_t mipi_lcd_paneldisp_on_off(esp_lcd_panel_t *panel, bool on_off)
     {
         command = LCD_CMD_DISPOFF;  /* 关闭显示命令 */
     }
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, command, NULL, 0), mipi_lcd_tag, "send command failed");
+    esp_err_t err = esp_lcd_panel_io_tx_param(io, command, NULL, 0);
+    if (mipidev.id == 0x79007 && err != ESP_OK) {
+        ESP_LOGW(mipi_lcd_tag, "EK79007 DISPON/OFF ignored: %s", esp_err_to_name(err));
+        return ESP_OK;
+    }
+    ESP_RETURN_ON_ERROR(err, mipi_lcd_tag, "send command failed");
     
     return ESP_OK;
 }
@@ -532,8 +545,14 @@ esp_lcd_panel_handle_t mipi_lcd_init(void)
 	mipidev.id = mipi_lcd_read_id(mipi_dbi_io);                             /* 读取MIPILCD的ID */
     ESP_LOGI(mipi_lcd_tag, "mipilcd_id:%#x ", mipidev.id);                  /* 打印MIPILCD的ID */
 
+    ESP_LOGI(mipi_lcd_tag, "panel DBI init...");
     ESP_ERROR_CHECK(esp_lcd_panel_init(mipi_lcd_ctrl_panel));               /* 初始化MIPILCD屏 */
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(mipi_lcd_ctrl_panel, true));  /* 打开MIPILCD屏 */
+    if (mipidev.id != 0x79007) {
+        ESP_LOGI(mipi_lcd_tag, "panel disp_on...");
+        ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(mipi_lcd_ctrl_panel, true));  /* 打开MIPILCD屏 */
+    } else {
+        ESP_LOGI(mipi_lcd_tag, "EK79007 disp_on in init_cmds, skip");
+    }
 
     if (mipidev.id == 0x7796)                                    /* 3,5寸 ST7796U屏幕参数 */
     {
@@ -578,13 +597,14 @@ esp_lcd_panel_handle_t mipi_lcd_init(void)
     {
         mipidev.pwidth   = 1024;                                 /* 面板宽度,单位:像素 */
         mipidev.pheight  = 600;                                  /* 面板高度,单位:像素 */
+        /* 与 esp_lcd_ek79007 EK79007_1024_600_PANEL_60HZ_CONFIG 一致 */
         mipidev.hbp      = 160;                                  /* 水平后廊 */
         mipidev.hfp      = 160;                                  /* 水平前廊 */
-        mipidev.hsw      = 20;                                   /* 水平同步宽度 */
+        mipidev.hsw      = 10;                                   /* 水平同步宽度 */
         mipidev.vbp      = 23;                                   /* 垂直后廊 */
         mipidev.vfp      = 12;                                   /* 垂直前廊 */
-        mipidev.vsw      = 10;                                   /* 垂直同步宽度 */
-        mipidev.pclk_mhz = 50;                                   /* 设置像素时钟 50Mhz */
+        mipidev.vsw      = 1;                                    /* 垂直同步宽度 */
+        mipidev.pclk_mhz = 52;                                   /* 像素时钟 52MHz @ 60Hz */
         mipidev.dir      = 1;                                    /* 只能横屏 */
     }
 	else if (mipidev.id == 0x9881c8)                             /* 8寸800P ILI9881C屏幕参数 */
@@ -638,6 +658,8 @@ esp_lcd_panel_handle_t mipi_lcd_init(void)
         },
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_dpi(mipi_dsi_bus, &dpi_config, &mipi_dpi_panel));     /* 为MIPI DSI DPI接口创建LCD控制句柄 */
+    ESP_LOGI(mipi_lcd_tag, "DPI panel init %lux%lu @ %luMHz", (unsigned long)mipidev.pwidth,
+             (unsigned long)mipidev.pheight, (unsigned long)mipidev.pclk_mhz);
     ESP_ERROR_CHECK(esp_lcd_panel_init(mipi_dpi_panel));                                    /* 初始化MIPILCD */
 
     return mipi_dpi_panel;

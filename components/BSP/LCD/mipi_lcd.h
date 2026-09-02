@@ -31,7 +31,7 @@
 
 /* 选择使用的屏幕尺寸 */
 #define MIPILCD_35_480320_ST7796U                0       /* 3.5 寸 320*480    ST7796U  MIPI屏 */
-#define MIPILCD_7_1024600_EK79007                0       /* 7   寸 1024*600   EK79007  MIPI屏 */
+#define MIPILCD_7_1024600_EK79007                1       /* 7   寸 1024*600   EK79007  MIPI屏 */
 #define MIPILCD_101_8001280_ILI9881C             0       /* 10.1寸 800*1280   ILI9881C MIPI屏 */
 
 /* MIPI DSI总线配置 */
@@ -40,7 +40,11 @@
 	#define MIPI_DSI_LANE_BITRATE_MBPS      560     /* 通道比特率 */
 #else
 	#define MIPI_DSI_LANE_NUM               2       /* 2个通道数据线 */
+#if MIPILCD_7_1024600_EK79007
+	#define MIPI_DSI_LANE_BITRATE_MBPS      900     /* EK79007 7寸屏推荐 900Mbps */
+#else
 	#define MIPI_DSI_LANE_BITRATE_MBPS      700     /* 通道比特率 */
+#endif
 #endif
 
 /* 设置VDD_MIPI_DPHY输出电压 */

@@ -312,6 +312,8 @@ static void preload_fish_sprites(anim_engine_t *eng, fish_tank_state_t *tank)
         } else {
             ESP_LOGW(TAG, "preload sprite failed %s (w=%d)", src->icon_path[0] ? src->icon_path : src->icon_bin_path, tw);
         }
+        /* Let IDLE/LVGL run — heavy PNG decode otherwise trips task WDT / MIPI underrun. */
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
     int ready = 0;
     for (int i = 0; i < n; i++) {
@@ -603,7 +605,8 @@ static void anim_update_bg_img(anim_engine_t *eng)
     } else {
         lv_obj_add_flag(eng->bg_img, LV_OBJ_FLAG_HIDDEN);
         if (eng->root) {
-            lv_obj_set_style_bg_color(eng->root, lv_color_hex(0x0ea5e9), 0);
+            /* Match screen chrome — avoid sky-blue flash when bg not ready. */
+            lv_obj_set_style_bg_color(eng->root, lv_color_hex(0x0f172a), 0);
             lv_obj_set_style_bg_opa(eng->root, LV_OPA_COVER, 0);
         }
     }
@@ -1144,7 +1147,7 @@ anim_engine_t *anim_engine_create(lv_obj_t *parent)
     lv_obj_remove_style_all(eng->root);
     lv_obj_set_size(eng->root, ANIM_W, eng->view_h);
     lv_obj_align(eng->root, LV_ALIGN_TOP_MID, 0, ANIM_CANVAS_TOP_Y);
-    lv_obj_set_style_bg_color(eng->root, lv_color_hex(0x0ea5e9), 0);
+    lv_obj_set_style_bg_color(eng->root, lv_color_hex(0x0f172a), 0);
     lv_obj_set_style_bg_opa(eng->root, LV_OPA_COVER, 0);
     lv_obj_clear_flag(eng->root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(eng->root, LV_OBJ_FLAG_CLICKABLE);
@@ -1348,7 +1351,10 @@ void anim_engine_trigger_feed(anim_engine_t *eng, int x, int y)
         ESP_LOGI(TAG, "feed ignored (already active)");
         return;
     }
-    ESP_LOGI(TAG, "feed trigger (%d,%d)", x, y);
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    /* HTTPS/SDIO cannot absorb back-to-back feeds; keep animation but skip API. */
+    const bool allow_api = (now_ms >= eng->feed_api_cool_until_ms);
+    ESP_LOGI(TAG, "feed trigger (%d,%d) api=%d", x, y, allow_api ? 1 : 0);
     eng->feed_active = true;
     float spawn_y = (float)y + FEED_SPAWN_DROP;
     for (int i = 0; i < ANIM_MAX_PARTICLES; i++) {
@@ -1365,7 +1371,8 @@ void anim_engine_trigger_feed(anim_engine_t *eng, int x, int y)
         eng->fishes[i].feed_delay = randf() * 900;
         eng->fishes[i].seek = NULL;
     }
-    if (eng->on_interaction) {
+    if (allow_api && eng->on_interaction) {
+        eng->feed_api_cool_until_ms = now_ms + 10000;
         eng->on_interaction("feed", NULL, eng->interaction_user);
     }
     anim_invalidate_feed(eng);

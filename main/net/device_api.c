@@ -11,6 +11,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mbedtls/md.h"
 #include "sdkconfig.h"
@@ -18,6 +19,7 @@
 
 static const char *TAG = "fish_api";
 static fish_config_t s_cfg;
+static SemaphoreHandle_t s_http_mu;
 
 static esp_err_t hmac_sha256_hex(const char *msg, const char *key, char *hex_out, size_t hex_len)
 {
@@ -49,6 +51,11 @@ static esp_err_t signed_request(const char *method, const char *sign_path, const
     }
     return ESP_ERR_NOT_SUPPORTED;
 #else
+    if (s_http_mu && xSemaphoreTake(s_http_mu, pdMS_TO_TICKS(60000)) != pdTRUE) {
+        ESP_LOGW(TAG, "http busy timeout %s", sign_path ? sign_path : "?");
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t ret = ESP_FAIL;
     char url[256];
     snprintf(url, sizeof(url), "%s%s", CONFIG_FISH_API_HOST, url_path);
 
@@ -59,7 +66,8 @@ static esp_err_t signed_request(const char *method, const char *sign_path, const
     char signature[65] = {0};
     esp_err_t herr = hmac_sha256_hex(sign_str, s_cfg.app_secret, signature, sizeof(signature));
     if (herr != ESP_OK) {
-        return herr;
+        ret = herr;
+        goto out_unlock;
     }
 
     char ts_hdr[24];
@@ -73,7 +81,8 @@ static esp_err_t signed_request(const char *method, const char *sign_path, const
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
-        return ESP_FAIL;
+        ret = ESP_FAIL;
+        goto out_unlock;
     }
 
     esp_http_client_set_header(client, "Content-Type", "application/json");
@@ -87,18 +96,21 @@ static esp_err_t signed_request(const char *method, const char *sign_path, const
         err = esp_http_client_open(client, body_len);
         if (err != ESP_OK) {
             esp_http_client_cleanup(client);
-            return err;
+            ret = err;
+            goto out_unlock;
         }
         int written = esp_http_client_write(client, body, body_len);
         if (written < 0 || (size_t)written != body_len) {
             esp_http_client_cleanup(client);
-            return ESP_FAIL;
+            ret = ESP_FAIL;
+            goto out_unlock;
         }
     } else {
         err = esp_http_client_open(client, 0);
         if (err != ESP_OK) {
             esp_http_client_cleanup(client);
-            return err;
+            ret = err;
+            goto out_unlock;
         }
     }
 
@@ -108,10 +120,18 @@ static esp_err_t signed_request(const char *method, const char *sign_path, const
         *http_code = code;
     }
     int read_total = 0;
+    if (content < 0 && code <= 0) {
+        ESP_LOGW(TAG, "HTTP headers/TLS failed %s (content=%d)", sign_path, content);
+        esp_http_client_cleanup(client);
+        ret = ESP_FAIL;
+        goto out_unlock;
+    }
     if (content > 0) {
         if ((size_t)content >= resp_len) {
-            ESP_LOGW(TAG, "response truncated %s %d -> %zu", sign_path, content, resp_len - 1);
-            content = (int)resp_len - 1;
+            ESP_LOGW(TAG, "response too large %s %d >= %zu", sign_path, content, resp_len);
+            esp_http_client_cleanup(client);
+            ret = ESP_ERR_NO_MEM;
+            goto out_unlock;
         }
         while (read_total < content) {
             int r = esp_http_client_read(client, resp + read_total, content - read_total);
@@ -119,6 +139,9 @@ static esp_err_t signed_request(const char *method, const char *sign_path, const
                 break;
             }
             read_total += r;
+        }
+        if (read_total < content) {
+            ESP_LOGW(TAG, "HTTP short read %s %d/%d", sign_path, read_total, content);
         }
     } else {
         while (read_total < (int)resp_len - 1) {
@@ -135,8 +158,18 @@ static esp_err_t signed_request(const char *method, const char *sign_path, const
         ESP_LOGW(TAG, "HTTP 401 auth failed %s %s", sign_path, resp[0] ? resp : "(empty)");
     } else if (code < 200 || code >= 300) {
         ESP_LOGW(TAG, "HTTP %d %s %s", code, sign_path, resp[0] ? resp : "(empty)");
+    } else if (read_total <= 0) {
+        ESP_LOGW(TAG, "HTTP %d empty body %s", code, sign_path);
     }
-    return (code >= 200 && code < 300) ? ESP_OK : ESP_FAIL;
+    /* Reject short/empty bodies even with 2xx — truncated JSON must not be applied. */
+    ret = (code >= 200 && code < 300 && read_total > 0 && (content <= 0 || read_total >= content))
+              ? ESP_OK
+              : ESP_FAIL;
+out_unlock:
+    if (s_http_mu) {
+        xSemaphoreGive(s_http_mu);
+    }
+    return ret;
 #endif
 }
 
@@ -233,6 +266,9 @@ esp_err_t fish_api_init(const fish_config_t *cfg)
         return ESP_ERR_INVALID_ARG;
     }
     s_cfg = *cfg;
+    if (!s_http_mu) {
+        s_http_mu = xSemaphoreCreateMutex();
+    }
     return ESP_OK;
 }
 
@@ -351,8 +387,21 @@ esp_err_t fish_api_tank_detail(const char *tank_id, char *json_out, size_t out_l
 #else
     char path[128];
     snprintf(path, sizeof(path), "/api/tank/detail?tankId=%s", tank_id ? tank_id : "");
-    int code = 0;
-    return signed_request("GET", "/api/tank/detail", path, "", json_out, out_len, &code);
+    /* Large JSON (~13KB) + WiFi/SDIO jitter → occasional TLS EOF (-0x0087). Retry. */
+    esp_err_t err = ESP_FAIL;
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        int code = 0;
+        err = signed_request("GET", "/api/tank/detail", path, "", json_out, out_len, &code);
+        if (err == ESP_OK) {
+            if (attempt > 1) {
+                ESP_LOGI(TAG, "tank detail OK on try %d", attempt);
+            }
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "tank detail try %d/3 failed code=%d", attempt, code);
+        vTaskDelay(pdMS_TO_TICKS(500 * attempt));
+    }
+    return err;
 #endif
 }
 

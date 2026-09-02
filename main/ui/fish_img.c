@@ -312,6 +312,9 @@ static esp_err_t rgba_to_dsc_buf(uint8_t *dst, int tw, int th, const uint8_t *sr
             dst[(size_t)(y * tw + x) * 3 + 1] = (c.full >> 8) & 0xFF;
             dst[(size_t)(y * tw + x) * 3 + 2] = p[3];
         }
+        if ((y & 31) == 0) {
+            vTaskDelay(1);
+        }
     }
     return ESP_OK;
 }
@@ -498,6 +501,10 @@ esp_err_t fish_img_prepare_rgba565a8_fit_width(const char *src_png, const char *
         STBI_FREE(rgba);
         return ESP_OK;
     }
+    if (spiffs_check_space((size_t)tw * (size_t)th * 3 + 64) != ESP_OK) {
+        STBI_FREE(rgba);
+        return ESP_ERR_NO_MEM;
+    }
     remove_path(dst_bin);
     ESP_LOGI(TAG, "prepare %s -> %dx%d", src_png, tw, th);
     if ((unsigned)tw == sw && (unsigned)th == sh) {
@@ -578,6 +585,10 @@ esp_err_t fish_img_prepare_rgba565a8(const char *src_png, const char *dst_bin, i
     }
     if (bin_is_valid(dst_bin, target_w, target_h) && file_is_image(src_png)) {
         return ESP_OK;
+    }
+    size_t rough_need = (size_t)target_w * (size_t)target_h * 3 + 64;
+    if (spiffs_check_space(rough_need) != ESP_OK) {
+        return ESP_ERR_NO_MEM;
     }
     remove_path(dst_bin);
     uint8_t *rgba = NULL;

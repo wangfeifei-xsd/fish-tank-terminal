@@ -12,6 +12,7 @@
 #include "ble/fish_ble.h"
 #include "device_api.h"
 #include "display_port.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "fish_ui.h"
@@ -24,15 +25,19 @@
 
 static const char *TAG = "fish_main";
 
-#define FISH_ONLINE_STACK_WORDS  16384
-#define FISH_WIFI_SYNC_STACK     16384
-#define FISH_SNTP_QUICK_MS       15000
+#define FISH_ONLINE_STACK_WORDS  12288
+#define FISH_WIFI_SYNC_STACK     12288
+#define FISH_SNTP_QUICK_MS       12000
+#define FISH_SNTP_RETRY_MS       30000
 
 static fish_config_t s_cfg;
 static fish_tank_state_t s_tank;
 static fish_ui_t *s_ui;
 static TaskHandle_t s_boot_cache_task;
 static SemaphoreHandle_t s_apply_mu;
+static bool s_online_started;
+static int s_online_create_fails;
+static bool s_tank_shown;
 
 typedef struct {
     bool running;
@@ -144,7 +149,8 @@ static void apply_tank_to_ui(void)
     vTaskPrioritySet(NULL, prio);
 
     if (apply_tank_ui_locked(15000)) {
-        ESP_LOGI(TAG, "tank applied (wifi=%d)", wifi ? 1 : 0);
+        s_tank_shown = true;
+        ESP_LOGI(TAG, "tank applied (wifi=%d fish=%d)", wifi ? 1 : 0, s_tank.fish_count);
     }
 
     if (s_apply_mu) {
@@ -165,29 +171,54 @@ static void on_wifi_connected(void *arg)
     ESP_LOGD(TAG, "WiFi got IP (online_services will sync)");
 }
 
+static void log_heap(const char *tag)
+{
+    ESP_LOGI(TAG, "heap[%s] internal=%u largest=%u psram=%u", tag,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
 static void sync_tank_from_api(void)
 {
-    char *detail_json = malloc(FISH_API_RESP_MAX);
+    char *detail_json = heap_caps_malloc(FISH_API_RESP_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!detail_json) {
+        detail_json = malloc(FISH_API_RESP_MAX);
+    }
     if (!detail_json) {
         ESP_LOGE(TAG, "detail_json alloc failed");
         return;
     }
 
+    log_heap("before tank sync");
     if (fish_api_tank_detail(s_cfg.tank_id, detail_json, FISH_API_RESP_MAX) == ESP_OK) {
-        bool need_apply = false;
-        if (fish_cache_needs_update(&s_tank, detail_json) || !fish_cache_assets_local_ready(&s_tank)) {
-            if (fish_cache_apply_detail_json(detail_json, &s_tank) != ESP_OK) {
-                ESP_LOGW(TAG, "apply detail json failed");
+        bool empty_ui = !s_tank_shown || s_tank.fish_count == 0;
+        bool need_meta = fish_cache_needs_update(&s_tank, detail_json) || empty_ui;
+        bool need_assets = !fish_cache_assets_local_ready(&s_tank);
+        if (need_meta || need_assets) {
+            if (fish_cache_apply_detail_meta(detail_json, &s_tank) != ESP_OK) {
+                ESP_LOGW(TAG, "apply detail meta failed");
             } else {
-                need_apply = true;
+                ESP_LOGI(TAG, "tank meta ready fish=%d (assets next)", s_tank.fish_count);
+                /* Paint fish count / placeholders before long image downloads. */
+                apply_tank_to_ui();
+                if (need_assets || !fish_cache_assets_local_ready(&s_tank)) {
+                    fish_cache_sync_remote_assets(&s_tank);
+                    if (fish_cache_assets_local_ready(&s_tank)) {
+                        fish_cache_gc(&s_tank);
+                    }
+                    apply_tank_to_ui();
+                }
+                ESP_LOGI(TAG, "tank detail applied fish=%d", s_tank.fish_count);
             }
         } else {
-            ESP_LOGI(TAG, "tank meta unchanged");
-        }
-        if (need_apply) {
-            apply_tank_to_ui();
+            ESP_LOGI(TAG, "tank meta unchanged fish=%d", s_tank.fish_count);
+            if (empty_ui) {
+                apply_tank_to_ui();
+            }
         }
     } else if (fish_cache_sync_tank(s_cfg.tank_id, &s_tank) == ESP_OK) {
+        ESP_LOGI(TAG, "tank sync fallback ok fish=%d", s_tank.fish_count);
         apply_tank_to_ui();
     } else {
         ESP_LOGW(TAG, "tank detail/sync failed");
@@ -198,17 +229,37 @@ static void sync_tank_from_api(void)
 static void poll_task(void *arg)
 {
     (void)arg;
+    bool synced_once = s_tank_shown && s_tank.fish_count > 0;
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(60000));
+        vTaskDelay(pdMS_TO_TICKS(synced_once ? 60000 : 5000));
         if (!fish_wifi_is_connected()) {
             continue;
         }
+        if (!fish_sntp_is_authoritative()) {
+            fish_sntp_wait_authoritative(FISH_SNTP_RETRY_MS);
+            if (!fish_sntp_is_authoritative()) {
+                continue;
+            }
+            ESP_LOGI(TAG, "poll: NTP became ready, sync tank");
+        }
         if (!s_cfg.tank_id[0]) {
             if (ensure_tank_bound(&s_cfg) == ESP_OK && s_ui) {
-                if (fish_cache_sync_tank(s_cfg.tank_id, &s_tank) == ESP_OK) {
-                    apply_tank_to_ui();
-                }
+                sync_tank_from_api();
+                synced_once = s_tank.fish_count > 0;
             }
+            continue;
+        }
+
+        if (!synced_once || s_tank.fish_count == 0) {
+            if (fish_ui_http_job_busy()) {
+                continue;
+            }
+            ESP_LOGI(TAG, "poll: force tank sync (shown=%d fish=%d)", s_tank_shown ? 1 : 0, s_tank.fish_count);
+            sync_tank_from_api();
+            synced_once = s_tank.fish_count > 0;
+        }
+
+        if (fish_ui_http_job_busy()) {
             continue;
         }
 
@@ -220,7 +271,10 @@ static void poll_task(void *arg)
             }
         }
 #if CONFIG_FISH_AUTO_POLL
-        char *detail_json = malloc(FISH_API_RESP_MAX);
+        char *detail_json = heap_caps_malloc(FISH_API_RESP_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!detail_json) {
+            detail_json = malloc(FISH_API_RESP_MAX);
+        }
         if (!detail_json) {
             continue;
         }
@@ -235,50 +289,15 @@ static void poll_task(void *arg)
     }
 }
 
-static void boot_cache_task(void *arg)
+static void run_api_sync_phase(void)
 {
-    (void)arg;
-    if (fish_cache_load_local(&s_tank) == ESP_OK) {
-        ESP_LOGI(TAG, "showing cached tank while network sync runs");
-    } else {
-        ESP_LOGW(TAG, "no local cache, showing empty tank");
-    }
-    apply_tank_to_ui();
-    s_boot_cache_task = NULL;
-    vTaskDelete(NULL);
-}
-
-static void online_services_task(void *arg)
-{
-    (void)arg;
-    ESP_LOGI(TAG, "online_services: start");
-
-    fish_wifi_wait_connected(30000);
-    if (!fish_wifi_is_connected()) {
-        ESP_LOGW(TAG, "online_services: WiFi timeout");
-        vTaskDelete(NULL);
-        return;
-    }
-    ESP_LOGI(TAG, "online_services: WiFi up");
-
-    wait_boot_cache_task();
-    if (fish_wifi_is_connected() && !fish_cache_assets_local_ready(&s_tank)) {
-        ESP_LOGI(TAG, "online_services: sync missing assets");
-        apply_tank_to_ui();
-    } else {
-        ESP_LOGI(TAG, "online_services: local assets ready, skip redundant apply");
-    }
-
-    if (!fish_sntp_sync(FISH_SNTP_QUICK_MS)) {
-        ESP_LOGW(TAG, "online_services: time not synced, API auth may fail");
-    } else {
-        ESP_LOGI(TAG, "online_services: time ready");
-    }
-
     ESP_LOGI(TAG, "online_services: API bind");
+    log_heap("before bind");
     esp_err_t bind_err = fish_api_bind(s_cfg.device_id, s_cfg.device_name);
     if (bind_err != ESP_OK) {
         ESP_LOGW(TAG, "online_services: bind failed %s", esp_err_to_name(bind_err));
+    } else {
+        ESP_LOGI(TAG, "online_services: bind OK");
     }
 
     if (ensure_tank_bound(&s_cfg) != ESP_OK) {
@@ -294,6 +313,57 @@ static void online_services_task(void *arg)
             lvgl_port_unlock();
         }
     }
+}
+
+static void online_services_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "online_services: start");
+
+    fish_wifi_wait_connected(30000);
+    if (!fish_wifi_is_connected()) {
+        ESP_LOGW(TAG, "online_services: WiFi timeout — show local cache");
+        wait_boot_cache_task();
+        if (!s_tank_shown) {
+            apply_tank_to_ui();
+        }
+        vTaskDelete(NULL);
+        return;
+    }
+    ESP_LOGI(TAG, "online_services: WiFi up");
+
+    wait_boot_cache_task();
+    log_heap("after meta load");
+
+    bool ntp_ok = fish_sntp_sync(FISH_SNTP_QUICK_MS);
+    if (ntp_ok) {
+        ESP_LOGI(TAG, "online_services: time ready (authoritative NTP)");
+    } else {
+        ESP_LOGW(TAG, "online_services: NTP slow — probe health then show cache, sync later");
+    }
+
+    log_heap("before health");
+    esp_err_t health_err = fish_api_health();
+    if (health_err == ESP_OK) {
+        ESP_LOGI(TAG, "online_services: API /health OK");
+    } else {
+        ESP_LOGW(TAG, "online_services: API /health failed %s", esp_err_to_name(health_err));
+    }
+
+    if (fish_sntp_is_authoritative()) {
+        run_api_sync_phase();
+    } else {
+        /* Don't block the loading screen for another minute — paint cache now. */
+        if (!s_tank_shown) {
+            ESP_LOGI(TAG, "online_services: show cache early fish=%d", s_tank.fish_count);
+            apply_tank_to_ui();
+        }
+    }
+
+    if (!s_tank_shown) {
+        ESP_LOGI(TAG, "online_services: show tank fish=%d", s_tank.fish_count);
+        apply_tank_to_ui();
+    }
 
     ESP_LOGI(TAG, "online_services: start poll task");
     if (xTaskCreatePinnedToCore(poll_task, "poll", 8192, NULL, 4, NULL, 0) != pdPASS) {
@@ -305,10 +375,35 @@ static void online_services_task(void *arg)
 
 static void start_online_services(void)
 {
-    if (xTaskCreatePinnedToCore(online_services_task, "fish_online", FISH_ONLINE_STACK_WORDS, NULL, 4, NULL, 0) != pdPASS) {
-        ESP_LOGE(TAG, "fish_online task create failed (stack=%u words)",
-                 (unsigned)FISH_ONLINE_STACK_WORDS);
+    if (s_online_started || s_online_create_fails >= 8) {
+        return;
     }
+    /* Wait until boot_cache has exited so its large stack is freed first. */
+    if (s_boot_cache_task != NULL) {
+        return;
+    }
+    s_online_started = true;
+    if (xTaskCreatePinnedToCore(online_services_task, "fish_online", FISH_ONLINE_STACK_WORDS, NULL, 4, NULL, 0) != pdPASS) {
+        s_online_started = false;
+        s_online_create_fails++;
+        ESP_LOGE(TAG, "fish_online task create failed (stack=%u words, try=%d)",
+                 (unsigned)FISH_ONLINE_STACK_WORDS, s_online_create_fails);
+    }
+}
+
+static void boot_cache_task(void *arg)
+{
+    (void)arg;
+    /* Only load JSON meta + GC. Heavy PNG/JPEG decode waits until after HTTPS sync
+     * so SDIO RX DMA buffers are still available for TLS. */
+    if (fish_cache_load_local(&s_tank) == ESP_OK) {
+        ESP_LOGI(TAG, "local cache meta ready fish=%d (defer sprite decode until API sync)", s_tank.fish_count);
+        fish_cache_gc(&s_tank);
+    } else {
+        ESP_LOGW(TAG, "no local cache meta");
+    }
+    s_boot_cache_task = NULL;
+    vTaskDelete(NULL);
 }
 
 static void on_ui_refresh(void *arg)
@@ -400,18 +495,23 @@ static void app_task(void *arg)
 #endif
 
     if (!provisioning) {
-        if (xTaskCreatePinnedToCore(boot_cache_task, "boot_cache", FISH_WIFI_SYNC_STACK, NULL, 4, &s_boot_cache_task, 0) != pdPASS) {
-            ESP_LOGE(TAG, "boot_cache task create failed, apply tank inline");
+        if (xTaskCreatePinnedToCore(boot_cache_task, "boot_cache", FISH_WIFI_SYNC_STACK, NULL, 3, &s_boot_cache_task,
+                                    0) != pdPASS) {
+            ESP_LOGE(TAG, "boot_cache task create failed, load meta inline");
             s_boot_cache_task = NULL;
-            apply_tank_to_ui();
+            if (fish_cache_load_local(&s_tank) == ESP_OK) {
+                fish_cache_gc(&s_tank);
+            }
         }
         fish_wifi_connect(&s_cfg);
-        start_online_services();
     }
 
     ESP_LOGI(TAG, "Fish tank terminal ready (provision=%d)", provisioning);
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (!provisioning) {
+            start_online_services();
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 

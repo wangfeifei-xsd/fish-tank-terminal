@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define FISH_MAX_FISH 10
+#define FISH_MAX_FISH 16
 #define FISH_MAX_DECO 8
 
 typedef struct {
@@ -39,6 +39,8 @@ typedef struct {
 esp_err_t fish_cache_init(void);
 esp_err_t fish_cache_load_local(fish_tank_state_t *state);
 esp_err_t fish_cache_sync_tank(const char *tank_id, fish_tank_state_t *state);
+/** Parse + save tank JSON only (no image downloads). Use before painting UI. */
+esp_err_t fish_cache_apply_detail_meta(const char *json, fish_tank_state_t *state);
 esp_err_t fish_cache_apply_detail_json(const char *json, fish_tank_state_t *state);
 bool fish_cache_needs_update(const fish_tank_state_t *state, const char *new_json);
 bool fish_cache_assets_local_ready(const fish_tank_state_t *state);

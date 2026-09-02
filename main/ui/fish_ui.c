@@ -6,6 +6,8 @@
 
 #include "device_api.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_timer.h"
 #include "fish_ui_style.h"
@@ -21,6 +23,7 @@
 #include "anim_engine.h"
 #include "ble/fish_ble.h"
 #include "display_port.h"
+#include "sntp_sync.h"
 #include "wifi_manager.h"
 
 #define FISH_BAR_W      380
@@ -49,6 +52,13 @@ typedef struct {
 static QueueHandle_t s_job_q;
 static bool s_worker_started;
 static int64_t s_last_feed_job_ms;
+static volatile bool s_feed_inflight;
+static volatile bool s_http_job_busy;
+
+bool fish_ui_http_job_busy(void)
+{
+    return s_http_job_busy || s_feed_inflight;
+}
 
 static void job_result_apply(void *user_data)
 {
@@ -60,6 +70,7 @@ static void job_result_apply(void *user_data)
     if (r->sync_ok && r->ui->tank) {
         fish_ui_set_tank(r->ui, r->ui->tank);
     }
+    fish_ui_hide_update_loading(r->ui);
     if (r->has_interaction && r->ui->anim) {
         anim_engine_set_interaction(r->ui->anim, &r->interaction);
         if (r->ui->bar_satiety) {
@@ -83,9 +94,14 @@ static void api_worker_task(void *arg)
         if (xQueueReceive(s_job_q, &job, portMAX_DELAY) != pdTRUE) {
             continue;
         }
+        s_http_job_busy = true;
         fish_ui_t *ui = job.ui;
         fish_job_result_t *res = calloc(1, sizeof(*res));
         if (!res) {
+            if (job.type == FISH_JOB_FEED) {
+                s_feed_inflight = false;
+            }
+            s_http_job_busy = false;
             continue;
         }
         res->ui = ui;
@@ -95,22 +111,49 @@ static void api_worker_task(void *arg)
             } else {
                 strncpy(res->toast, "未绑定鱼缸", sizeof(res->toast) - 1);
                 lv_async_call(job_result_apply, res);
+                if (job.type == FISH_JOB_FEED) {
+                    s_feed_inflight = false;
+                }
+                s_http_job_busy = false;
                 continue;
             }
         }
         switch (job.type) {
         case FISH_JOB_FEED:
+            if (!fish_wifi_is_connected()) {
+                strncpy(res->toast, "未联网，稍后再试", sizeof(res->toast) - 1);
+                break;
+            }
+            if (!fish_sntp_is_authoritative()) {
+                strncpy(res->toast, "时间未同步，稍后再试", sizeof(res->toast) - 1);
+                break;
+            }
+            /* SDIO RX asserts when DMA/internal is fragmented during TLS. */
+            if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) < 8192 ||
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) < 20480) {
+                ESP_LOGW("fish_ui", "feed skipped: low internal heap (dma=%u int=%u)",
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+                strncpy(res->toast, "内存紧张，稍后再试", sizeof(res->toast) - 1);
+                break;
+            }
             if (fish_api_feed(ui->cfg->tank_id, &res->interaction) == ESP_OK) {
                 res->has_interaction = true;
                 strncpy(res->toast, "喂食成功", sizeof(res->toast) - 1);
             } else {
                 strncpy(res->toast, "喂食失败", sizeof(res->toast) - 1);
             }
+            /* Let hosted SDIO reclaim RX buffers before the next HTTPS. */
+            vTaskDelay(pdMS_TO_TICKS(200));
             break;
 #define FISH_CANVAS_H ANIM_VIEW_H
 
         case FISH_JOB_SYNC:
-            if (ui->tank && fish_cache_sync_tank(ui->cfg->tank_id, ui->tank) == ESP_OK) {
+            if (ui->refresh_cb) {
+                ui->refresh_cb(ui->refresh_arg);
+                res->sync_ok = true;
+                strncpy(res->toast, "鱼缸已更新", sizeof(res->toast) - 1);
+            } else if (ui->tank && fish_cache_sync_tank(ui->cfg->tank_id, ui->tank) == ESP_OK) {
                 UBaseType_t prio = uxTaskPriorityGet(NULL);
                 vTaskPrioritySet(NULL, 3);
                 fish_cache_prepare_assets(ui->tank, CONFIG_FISH_LOGICAL_WIDTH, FISH_CANVAS_H);
@@ -123,11 +166,16 @@ static void api_worker_task(void *arg)
             } else {
                 strncpy(res->toast, "网络错误", sizeof(res->toast) - 1);
             }
+            vTaskDelay(pdMS_TO_TICKS(100));
             break;
         default:
             break;
         }
         lv_async_call(job_result_apply, res);
+        if (job.type == FISH_JOB_FEED) {
+            s_feed_inflight = false;
+        }
+        s_http_job_busy = false;
     }
 }
 
@@ -136,24 +184,34 @@ static void ensure_worker(void)
     if (s_worker_started) {
         return;
     }
-    s_job_q = xQueueCreate(8, sizeof(fish_job_t));
+    s_job_q = xQueueCreate(2, sizeof(fish_job_t));
     if (!s_job_q) {
         return;
     }
-    /* HTTPS/mbedtls needs headroom; interaction buffers are heap-backed. */
-    if (xTaskCreatePinnedToCore(api_worker_task, "fish_api", 24576, NULL, 4, NULL, 0) == pdPASS) {
+    /* Keep stack modest — HTTPS buffers are heap/PSRAM; a 96KB stack starved SDIO DMA. */
+    if (xTaskCreatePinnedToCore(api_worker_task, "fish_api", 10240, NULL, 4, NULL, 0) == pdPASS) {
         s_worker_started = true;
+    } else {
+        ESP_LOGE("fish_ui", "fish_api task create failed");
+        vQueueDelete(s_job_q);
+        s_job_q = NULL;
     }
 }
 
-static void enqueue_job(fish_ui_t *ui, fish_job_type_t type, const char *region)
+static bool enqueue_job(fish_ui_t *ui, fish_job_type_t type, const char *region)
 {
     if (!ui) {
-        return;
+        return false;
     }
     ensure_worker();
     if (!s_job_q) {
-        return;
+        return false;
+    }
+    if (type == FISH_JOB_FEED) {
+        if (s_feed_inflight) {
+            ESP_LOGI("fish_ui", "feed job skipped (inflight)");
+            return false;
+        }
     }
     fish_job_t job = {
         .type = type,
@@ -162,7 +220,62 @@ static void enqueue_job(fish_ui_t *ui, fish_job_type_t type, const char *region)
     if (region) {
         strncpy(job.region, region, sizeof(job.region) - 1);
     }
-    xQueueSend(s_job_q, &job, 0);
+    if (xQueueSend(s_job_q, &job, 0) != pdTRUE) {
+        ESP_LOGW("fish_ui", "job queue full, drop type=%d", (int)type);
+        return false;
+    }
+    if (type == FISH_JOB_FEED) {
+        s_feed_inflight = true;
+    }
+    return true;
+}
+
+static void loading_bar_anim_exec(void *bar, int32_t v)
+{
+    lv_bar_set_value(bar, v, LV_ANIM_OFF);
+}
+
+static void loading_bar_start(lv_obj_t *bar)
+{
+    if (!bar) {
+        return;
+    }
+    lv_anim_del(bar, loading_bar_anim_exec);
+    lv_bar_set_range(bar, 0, 100);
+    lv_bar_set_value(bar, 12, LV_ANIM_OFF);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, bar);
+    lv_anim_set_values(&a, 12, 88);
+    lv_anim_set_time(&a, 1000);
+    lv_anim_set_playback_time(&a, 1000);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_set_exec_cb(&a, loading_bar_anim_exec);
+    lv_anim_start(&a);
+}
+
+static void loading_bar_stop(lv_obj_t *bar)
+{
+    if (!bar) {
+        return;
+    }
+    lv_anim_del(bar, loading_bar_anim_exec);
+}
+
+static lv_obj_t *make_loading_bar(lv_obj_t *parent, lv_coord_t w)
+{
+    lv_obj_t *bar = lv_bar_create(parent);
+    lv_obj_set_size(bar, w, 14);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x334155), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(bar, 7, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x38bdf8), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(bar, 7, LV_PART_INDICATOR);
+    lv_bar_set_range(bar, 0, 100);
+    lv_bar_set_value(bar, 12, LV_ANIM_OFF);
+    return bar;
 }
 
 static void btn_wifi_refresh(fish_ui_t *ui)
@@ -177,11 +290,11 @@ static void btn_wifi_refresh(fish_ui_t *ui)
         }
         fish_config_save(ui->cfg);
     }
-    fish_ui_show_toast(ui, "同步中…");
-    if (ui->refresh_cb) {
-        ui->refresh_cb(ui->refresh_arg);
-    } else {
-        enqueue_job(ui, FISH_JOB_SYNC, NULL);
+    /* Async job so the loading popup can paint; never block LVGL on HTTPS. */
+    fish_ui_show_update_loading(ui, "页面更新加载中");
+    if (!enqueue_job(ui, FISH_JOB_SYNC, NULL)) {
+        fish_ui_hide_update_loading(ui);
+        fish_ui_show_toast(ui, "繁忙，稍后再试");
     }
 }
 
@@ -339,7 +452,14 @@ void fish_ui_set_content_ready(fish_ui_t *ui)
         return;
     }
     ui->content_ready = true;
+    if (ui->anim) {
+        lv_obj_t *anim_root = anim_engine_get_root(ui->anim);
+        if (anim_root) {
+            lv_obj_clear_flag(anim_root, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
     if (ui->loading_panel) {
+        loading_bar_stop(ui->loading_bar);
         lv_obj_add_flag(ui->loading_panel, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -404,7 +524,11 @@ static void interaction_cb(const char *action, const char *region, void *user)
     }
     if (strcmp(action, "feed") == 0) {
         int64_t now = esp_timer_get_time() / 1000;
-        if (s_last_feed_job_ms > 0 && (now - s_last_feed_job_ms) < 1500) {
+        if (s_feed_inflight) {
+            return;
+        }
+        /* Match anim API cooldown — avoid stacking HTTPS while SDIO is busy. */
+        if (s_last_feed_job_ms > 0 && (now - s_last_feed_job_ms) < 10000) {
             return;
         }
         s_last_feed_job_ms = now;
@@ -524,6 +648,13 @@ fish_ui_t *fish_ui_create(fish_config_t *cfg, bool provisioning)
         ui->content_ready = true;
         anim_engine_start(ui->anim);
     } else {
+        /* Hide tank layer until assets ready — prevents sky/water flash under overlay. */
+        if (ui->anim) {
+            lv_obj_t *anim_root = anim_engine_get_root(ui->anim);
+            if (anim_root) {
+                lv_obj_add_flag(anim_root, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
         ui->loading_panel = lv_obj_create(ui->screen);
         lv_obj_set_size(ui->loading_panel, CONFIG_FISH_LOGICAL_WIDTH, CONFIG_FISH_LOGICAL_HEIGHT);
         lv_obj_align(ui->loading_panel, LV_ALIGN_TOP_LEFT, 0, 0);
@@ -532,15 +663,20 @@ fish_ui_t *fish_ui_create(fish_config_t *cfg, bool provisioning)
         lv_obj_set_style_border_width(ui->loading_panel, 0, 0);
         lv_obj_set_style_radius(ui->loading_panel, 0, 0);
         lv_obj_clear_flag(ui->loading_panel, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_t *loading_lbl = lv_label_create(ui->loading_panel);
-        lv_obj_set_style_text_color(loading_lbl, lv_color_hex(0x94a3b8), 0);
-        lv_obj_set_style_text_font(loading_lbl, &fish_font_24, 0);
-        lv_label_set_text(loading_lbl, "加载中");
-        lv_obj_center(loading_lbl);
+
+        ui->loading_lbl = lv_label_create(ui->loading_panel);
+        lv_obj_set_style_text_color(ui->loading_lbl, lv_color_hex(0xe2e8f0), 0);
+        lv_obj_set_style_text_font(ui->loading_lbl, &fish_font_36, 0);
+        lv_label_set_text(ui->loading_lbl, "加载中");
+        lv_obj_align(ui->loading_lbl, LV_ALIGN_CENTER, 0, -28);
+
+        ui->loading_bar = make_loading_bar(ui->loading_panel, 360);
+        lv_obj_align(ui->loading_bar, LV_ALIGN_CENTER, 0, 28);
+        loading_bar_start(ui->loading_bar);
         lv_obj_move_foreground(ui->loading_panel);
     }
 
-    ensure_worker();
+    /* Defer fish_api worker until first job — saves stack during boot_cache/TLS sync. */
     if (!provisioning) {
         ui->wifi_timer = lv_timer_create(wifi_status_timer_cb, 3000, ui);
     }
@@ -561,6 +697,8 @@ void fish_ui_destroy(fish_ui_t *ui)
         lv_timer_del(ui->wifi_timer);
         ui->wifi_timer = NULL;
     }
+    loading_bar_stop(ui->loading_bar);
+    loading_bar_stop(ui->update_bar);
     if (ui->anim) {
         anim_engine_stop(ui->anim);
         anim_engine_destroy(ui->anim);
@@ -639,6 +777,57 @@ void fish_ui_show_toast(fish_ui_t *ui, const char *msg)
     lv_obj_clear_flag(ui->toast_bar, LV_OBJ_FLAG_HIDDEN);
     ui->toast_timer = lv_timer_create(toast_hide_cb, 1500, ui);
     lv_timer_set_repeat_count(ui->toast_timer, 1);
+}
+
+void fish_ui_show_update_loading(fish_ui_t *ui, const char *msg)
+{
+    if (!ui || !ui->screen) {
+        return;
+    }
+    if (!ui->update_panel) {
+        ui->update_panel = lv_obj_create(ui->screen);
+        lv_obj_set_size(ui->update_panel, CONFIG_FISH_LOGICAL_WIDTH, CONFIG_FISH_LOGICAL_HEIGHT);
+        lv_obj_align(ui->update_panel, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_set_style_bg_color(ui->update_panel, lv_color_hex(0x020617), 0);
+        lv_obj_set_style_bg_opa(ui->update_panel, LV_OPA_70, 0);
+        lv_obj_set_style_border_width(ui->update_panel, 0, 0);
+        lv_obj_set_style_radius(ui->update_panel, 0, 0);
+        lv_obj_clear_flag(ui->update_panel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(ui->update_panel, LV_OBJ_FLAG_CLICKABLE);
+
+        lv_obj_t *card = lv_obj_create(ui->update_panel);
+        lv_obj_set_size(card, 520, 180);
+        lv_obj_center(card);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x1e293b), 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(0x38bdf8), 0);
+        lv_obj_set_style_border_width(card, 2, 0);
+        lv_obj_set_style_radius(card, 16, 0);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+        ui->update_lbl = lv_label_create(card);
+        lv_obj_set_style_text_color(ui->update_lbl, lv_color_hex(0xf8fafc), 0);
+        lv_obj_set_style_text_font(ui->update_lbl, &fish_font_36, 0);
+        lv_obj_align(ui->update_lbl, LV_ALIGN_TOP_MID, 0, 36);
+
+        ui->update_bar = make_loading_bar(card, 360);
+        lv_obj_align(ui->update_bar, LV_ALIGN_BOTTOM_MID, 0, -36);
+    }
+    if (ui->update_lbl) {
+        lv_label_set_text(ui->update_lbl, msg && msg[0] ? msg : "页面更新加载中");
+    }
+    loading_bar_start(ui->update_bar);
+    lv_obj_clear_flag(ui->update_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(ui->update_panel);
+}
+
+void fish_ui_hide_update_loading(fish_ui_t *ui)
+{
+    if (!ui || !ui->update_panel) {
+        return;
+    }
+    loading_bar_stop(ui->update_bar);
+    lv_obj_add_flag(ui->update_panel, LV_OBJ_FLAG_HIDDEN);
 }
 
 void fish_ui_show_status(fish_ui_t *ui, const char *msg)

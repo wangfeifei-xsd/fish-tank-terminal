@@ -39,10 +39,16 @@ menu "Fish Tank Terminal"
 
     config FISH_LOGICAL_WIDTH
         int "Logical canvas width (landscape)"
-        default 1280
+        default 1024
+        help
+            Must match the physical panel width in landscape mode
+            (7" EK79007: 1024, 5" WKS50HD071: 1280).
 
     config FISH_LOGICAL_HEIGHT
         int "Logical canvas height (landscape)"
-        default 720
+        default 600
+        help
+            Must match the physical panel height in landscape mode
+            (7" EK79007: 600, 5" WKS50HD071: 720).
 
 endmenu

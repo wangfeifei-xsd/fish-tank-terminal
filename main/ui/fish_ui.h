@@ -29,6 +29,11 @@ typedef struct {
     lv_obj_t *toast_bar;
     lv_obj_t *toast_lbl;
     lv_obj_t *loading_panel;
+    lv_obj_t *loading_lbl;
+    lv_obj_t *loading_bar;
+    lv_obj_t *update_panel;
+    lv_obj_t *update_lbl;
+    lv_obj_t *update_bar;
     lv_timer_t *toast_timer;
     lv_timer_t *wifi_timer;
     fish_ui_refresh_cb_t refresh_cb;
@@ -53,6 +58,10 @@ void fish_ui_show_status(fish_ui_t *ui, const char *msg);
 void fish_ui_update_wifi_status(fish_ui_t *ui);
 /** Hide boot loading overlay once tank assets are on screen (idempotent). */
 void fish_ui_set_content_ready(fish_ui_t *ui);
+/** True while feed/sync worker holds or queues an HTTPS job. */
+bool fish_ui_http_job_busy(void);
+void fish_ui_show_update_loading(fish_ui_t *ui, const char *msg);
+void fish_ui_hide_update_loading(fish_ui_t *ui);
 
 #ifdef __cplusplus
 }

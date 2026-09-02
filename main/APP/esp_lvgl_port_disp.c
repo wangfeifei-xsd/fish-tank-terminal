@@ -27,6 +27,17 @@ static size_t lvgl_port_cache_align(size_t size)
     return (size + 63U) & ~((size_t)63U);
 }
 
+static void lvgl_port_flush_draw_cache(const void *buf, size_t bytes)
+{
+    if (!buf || bytes == 0) {
+        return;
+    }
+    uintptr_t addr = (uintptr_t)buf;
+    uintptr_t start = addr & ~((uintptr_t)63U);
+    size_t sync_len = lvgl_port_cache_align((size_t)(addr - start + bytes));
+    esp_cache_msync((void *)start, sync_len, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+}
+
 /*******************************************************************************
 * 类型定义
 *******************************************************************************/
@@ -161,10 +172,15 @@ lv_display_t *lvgl_port_add_disp_dsi(const lvgl_port_display_cfg_t *disp_cfg, co
         /* 注册完成回调 */
         esp_lcd_dpi_panel_register_event_callbacks(disp_ctx->panel_handle, &cbs, &disp_ctx->disp_drv);
 #endif
-        /* Landscape: LVGL hres×vres is swapped vs physical panel; rotate at flush via PPA. */
-        disp_ctx->ppa_rotate = true;
-        disp_ctx->panel_w = disp_cfg->vres;
-        disp_ctx->panel_h = disp_cfg->hres;
+        /* Portrait panel: LVGL hres×vres swapped vs physical; rotate at flush via PPA. */
+        disp_ctx->ppa_rotate = !dsi_cfg->flags.native_landscape;
+        if (dsi_cfg->flags.native_landscape) {
+            disp_ctx->panel_w = disp_cfg->hres;
+            disp_ctx->panel_h = disp_cfg->vres;
+        } else {
+            disp_ctx->panel_w = disp_cfg->vres;
+            disp_ctx->panel_h = disp_cfg->hres;
+        }
         disp_ctx->panel_fb_bytes = lvgl_port_cache_align((size_t)disp_ctx->panel_w * disp_ctx->panel_h * sizeof(uint16_t));
         /* PPA writes DPI back FB directly (zero-copy swap via draw_bitmap of FB ptr). */
         if (esp_lcd_dpi_panel_get_frame_buffer(disp_ctx->panel_handle, 2,
@@ -858,7 +874,11 @@ static void lvgl_port_flush_callback(lv_disp_drv_t *drv, const lv_area_t *area, 
                         lvgl_port_ppa_present(disp_ctx);
                     }
                 } else {
-                    esp_lcd_panel_draw_bitmap(disp_ctx->panel_handle, x_start, y_start, x_end + 1, y_end + 1, color_map);
+                    const uint32_t hres = (uint32_t)drv->hor_res;
+                    const uint32_t vres = (uint32_t)drv->ver_res;
+                    void *fb = (drv->draw_buf && drv->draw_buf->buf_act) ? drv->draw_buf->buf_act : color_map;
+                    lvgl_port_flush_draw_cache(fb, (size_t)hres * vres * sizeof(lv_color_t));
+                    esp_lcd_panel_draw_bitmap(disp_ctx->panel_handle, 0, 0, (int)hres, (int)vres, fb);
                     if (disp_ctx->trans_sem) {
                         xSemaphoreTake(disp_ctx->trans_sem, 0);
                         xSemaphoreTake(disp_ctx->trans_sem, portMAX_DELAY);
@@ -878,6 +898,7 @@ static void lvgl_port_flush_callback(lv_disp_drv_t *drv, const lv_area_t *area, 
                 }
                 lv_disp_flush_ready(drv);
             } else {
+                lvgl_port_flush_draw_cache(color_map, (size_t)width * height * sizeof(lv_color_t));
                 esp_lcd_panel_draw_bitmap(disp_ctx->panel_handle, x_start, y_start, x_end + 1, y_end + 1, color_map);
                 if (disp_ctx->disp_type == LVGL_PORT_DISP_TYPE_DSI && !drv->direct_mode && !drv->full_refresh) {
                     if (lv_disp_flush_is_last(drv)) {

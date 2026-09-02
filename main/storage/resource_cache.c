@@ -11,9 +11,12 @@
 
 #include "cJSON.h"
 #include "device_api.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_spiffs.h"
 #include "fish_img.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "wifi_manager.h"
 
 static const char *TAG = "fish_cache";
@@ -641,32 +644,51 @@ esp_err_t fish_cache_sync_tank(const char *tank_id, fish_tank_state_t *state)
     if (!state) {
         return ESP_ERR_INVALID_ARG;
     }
-    memset(state, 0, sizeof(*state));
-    esp_err_t err = fish_api_tank_detail(tank_id, state->tank_json, sizeof(state->tank_json));
+    char *json = heap_caps_malloc(FISH_API_RESP_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!json) {
+        json = malloc(FISH_API_RESP_MAX);
+    }
+    if (!json) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = fish_api_tank_detail(tank_id, json, FISH_API_RESP_MAX);
     if (err != ESP_OK) {
+        free(json);
         return err;
     }
-    return fish_cache_apply_detail_json(state->tank_json, state);
+    err = fish_cache_apply_detail_json(json, state);
+    free(json);
+    return err;
 }
 
-esp_err_t fish_cache_apply_detail_json(const char *json, fish_tank_state_t *state)
+esp_err_t fish_cache_apply_detail_meta(const char *json, fish_tank_state_t *state)
 {
     if (!state || !json) {
         return ESP_ERR_INVALID_ARG;
     }
     strncpy(state->tank_json, json, sizeof(state->tank_json) - 1);
     state->tank_json[sizeof(state->tank_json) - 1] = '\0';
-    parse_tank_state(state->tank_json, state, false);
+    /* local_only: fill paths/counts without blocking on HTTPS image downloads. */
+    parse_tank_state(state->tank_json, state, true);
+    FILE *f = fopen(META_PATH, "w");
+    if (f) {
+        fwrite(state->tank_json, 1, strlen(state->tank_json), f);
+        fclose(f);
+    }
+    return ESP_OK;
+}
+
+esp_err_t fish_cache_apply_detail_json(const char *json, fish_tank_state_t *state)
+{
+    esp_err_t err = fish_cache_apply_detail_meta(json, state);
+    if (err != ESP_OK) {
+        return err;
+    }
     fish_cache_sync_remote_assets(state);
     if (fish_cache_assets_local_ready(state)) {
         fish_cache_gc(state);
     } else {
         ESP_LOGW(TAG, "skip GC until fish/bg assets are cached locally");
-    }
-    FILE *f = fopen(META_PATH, "w");
-    if (f) {
-        fwrite(state->tank_json, 1, strlen(state->tank_json), f);
-        fclose(f);
     }
     return ESP_OK;
 }
@@ -809,12 +831,16 @@ void fish_cache_prepare_assets(fish_tank_state_t *state, int canvas_w, int canva
     size_t total = 0;
     size_t used = 0;
     size_t budget = FISH_CACHE_BUDGET_BYTES;
+    size_t free_bytes = 0;
     if (esp_spiffs_info(NULL, &total, &used) == ESP_OK && total > used) {
-        budget = total - used;
+        free_bytes = total - used;
+        budget = free_bytes;
         if (budget > FISH_CACHE_BUDGET_BYTES) {
             budget = FISH_CACHE_BUDGET_BYTES;
         }
     }
+    /* SPIFFS nearly full: skip bin baking (avoids decode-then-fail loops); PSRAM path still works. */
+    const bool skip_sprite_bins = (free_bytes < 128 * 1024);
 
     if (state->tank.bg_path[0]) {
         fish_cache_prepare_bg(&state->tank, canvas_w, canvas_h);
@@ -830,9 +856,15 @@ void fish_cache_prepare_assets(fish_tank_state_t *state, int canvas_w, int canva
     }
     float sprite_norm = fish_sprite_norm_from_max(max_fish_px);
     int fish_ready = 0;
+    if (skip_sprite_bins) {
+        ESP_LOGW(TAG, "SPIFFS low (%u free), skip sprite bin prepare", (unsigned)free_bytes);
+    }
     for (int i = 0; i < state->fish_count; i++) {
         fish_item_t *fish = &state->fish[i];
         if (!fish->icon_url[0] && !fish->icon_path[0]) {
+            continue;
+        }
+        if (skip_sprite_bins) {
             continue;
         }
         int sprite_px = fish_size_to_sprite_px(fish->size_cm, px_per_cm, sprite_norm);
@@ -845,26 +877,29 @@ void fish_cache_prepare_assets(fish_tank_state_t *state, int canvas_w, int canva
             budget = budget > need ? budget - need : 0;
             fish_ready++;
         }
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
     ESP_LOGI(TAG, "prepare_assets fish_sprites=%d/%d wifi=%d", fish_ready, state->fish_count,
              fish_wifi_is_connected() ? 1 : 0);
-    for (int i = 0; i < state->deco_count; i++) {
-        fish_deco_item_t *deco = &state->decos[i];
-        if (!deco->png_path[0]) {
-            continue;
+    if (!skip_sprite_bins) {
+        for (int i = 0; i < state->deco_count; i++) {
+            fish_deco_item_t *deco = &state->decos[i];
+            if (!deco->png_path[0]) {
+                continue;
+            }
+            int tw = 0;
+            int th = 0;
+            if (fish_cache_prepare_deco(deco, px_per_cm, &tw, &th) != ESP_OK) {
+                continue;
+            }
+            size_t need = (size_t)tw * (size_t)th * 3 + 6;
+            if (need > budget) {
+                ESP_LOGW(TAG, "skip deco %d, need %u budget %u", i, (unsigned)need, (unsigned)budget);
+                unlink(deco->bin_path);
+                continue;
+            }
+            budget = budget > need ? budget - need : 0;
         }
-        int tw = 0;
-        int th = 0;
-        if (fish_cache_prepare_deco(deco, px_per_cm, &tw, &th) != ESP_OK) {
-            continue;
-        }
-        size_t need = (size_t)tw * (size_t)th * 3 + 6;
-        if (need > budget) {
-            ESP_LOGW(TAG, "skip deco %d, need %u budget %u", i, (unsigned)need, (unsigned)budget);
-            unlink(deco->bin_path);
-            continue;
-        }
-        budget = budget > need ? budget - need : 0;
     }
 }
 

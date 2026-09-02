@@ -12,7 +12,12 @@
 
 #include "lcd.h"
 #include "lcdfont.h"
+#include "esp_cache.h"
+#include "esp_lcd_mipi_dsi.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+
+static const char *lcd_tag = "lcd";
 
 
 DRAM_ATTR void *lcd_buffer[2];              /* 指向屏幕双缓存 */
@@ -60,6 +65,7 @@ void lcd_init(void)
     vTaskDelay(100 / portTICK_PERIOD_MS);
 
     lcddev.lcd_panel_handle = mipi_lcd_init();                  /* 初始化MIPI LCD */
+    ESP_LOGI(lcd_tag, "mipi init done, get frame buffer");
     ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(lcddev.lcd_panel_handle, 2, &lcd_buffer[0], &lcd_buffer[1])); /* 获取帧缓冲区 */
     
     const esp_lcd_dpi_panel_event_callbacks_t mipi_cbs = {
@@ -68,7 +74,18 @@ void lcd_init(void)
     
     /* 注册回调函数 */
     esp_lcd_dpi_panel_register_event_callbacks(lcddev.lcd_panel_handle, &mipi_cbs, NULL);
+
+    if (lcddev.id == 0x79007) {
+        ESP_LOGI(lcd_tag, "EK79007 pattern test (vertical bars)");
+        LCD_BL(1);
+        ESP_ERROR_CHECK(esp_lcd_dpi_panel_set_pattern(lcddev.lcd_panel_handle, MIPI_DSI_PATTERN_BAR_VERTICAL));
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        ESP_ERROR_CHECK(esp_lcd_dpi_panel_set_pattern(lcddev.lcd_panel_handle, MIPI_DSI_PATTERN_NONE));
+    }
+
+    ESP_LOGI(lcd_tag, "lcd_clear %lux%lu", (unsigned long)lcddev.width, (unsigned long)lcddev.height);
     lcd_clear(WHITE);
+    ESP_LOGI(lcd_tag, "backlight on");
     LCD_BL(1);      /* 打开背光 */
 }
 
@@ -87,16 +104,27 @@ IRAM_ATTR void lcd_clear(uint16_t color)
         buffer[i] = color;
     }
 
-    esp_lcd_panel_draw_bitmap(lcddev.lcd_panel_handle, 0, 0, lcddev.width, lcddev.height, buffer);
+    if (lcddev.id == 0x79007) {
+        /* EK79007: 写入 DPI frame buffer 并刷 cache，硬件持续扫描 */
+        const size_t fb_bytes = (size_t)lcddev.width * lcddev.height * sizeof(uint16_t);
+        esp_cache_msync(buffer, fb_bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        /* 再推一帧确保首屏可见 */
+        esp_lcd_panel_draw_bitmap(lcddev.lcd_panel_handle, 0, 0, lcddev.width, lcddev.height, buffer);
+    } else {
+        esp_lcd_panel_draw_bitmap(lcddev.lcd_panel_handle, 0, 0, lcddev.width, lcddev.height, buffer);
+    }
     /* 清除传输完成标志 */
     refresh_done_flag = 0;
 
-    do
-    {
-        /* 等待内部缓存刷新完成 */
+    if (lcddev.id == 0x79007) {
+        /* 硬件持续刷新，无需等待 on_refresh_done */
+        refresh_done_flag = 1;
+    } else for (uint32_t wait_ms = 0; wait_ms < 500 && refresh_done_flag != 1; wait_ms++) {
         vTaskDelay(1);
     }
-    while (refresh_done_flag != 1);
+    if (refresh_done_flag != 1) {
+        ESP_LOGW(lcd_tag, "lcd_clear: refresh timeout (%ux%u)", (unsigned)lcddev.width, (unsigned)lcddev.height);
+    }
     /* 使用异或操作在 0 和 1 之间切换，目的是为了切换另一个缓冲区 */
     buffer_sw ^= 1;
 }

@@ -13,7 +13,9 @@ set(include_dirs
 set(requires
             driver
             esp_lcd
-            esp_common)
+            esp_common
+            esp_mm
+            esp_lcd_ek79007)
 
 idf_component_register(SRC_DIRS ${src_dirs} INCLUDE_DIRS ${include_dirs} REQUIRES ${requires})
 
