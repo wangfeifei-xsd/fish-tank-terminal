@@ -479,9 +479,6 @@ static void update_tank_header_locked(fish_ui_t *ui, fish_tank_state_t *tank)
     if (tank->fish_count > 0) {
         pos += snprintf(buf + pos, sizeof(buf) - pos, " - %d条鱼", tank->fish_count);
     }
-    if (t->total_value > 0) {
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d元)", t->total_value);
-    }
     lv_label_set_text(ui->lbl_title, buf);
 
     if (ui->lbl_nickname) {
